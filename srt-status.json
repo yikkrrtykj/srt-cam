@@ -1,6 +1,4 @@
 {
-  "directions": {
-    "6": "SH->EG"
-  },
+  "directions": {},
   "expected_active": []
 }

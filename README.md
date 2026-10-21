@@ -34,7 +34,7 @@ sudo srt-status -s 6
 
 Both sides use Caller; server endpoints are Listener. Ten independent Docker containers `srt-cam1` through `srt-cam10`, using host networking. The original YAML is preserved at [`archive/docker-compose.original.yml`](archive/docker-compose.original.yml).
 
-For the current event: **Egypt → Shanghai: 7 channels; Shanghai → Egypt: 2 channels**. **Only CAM6 is confirmed Shanghai → Egypt**; assign actual direction for the other channels in `/etc/srt-status.json` once known. Avoid assuming channels 1–7 map to Egypt without confirmation. Mark the specific channels scheduled for a test in `expected_active` to distinguish idle from `CHECK NO TRAFFIC`.
+The default `srt-status.json` deliberately contains **no direction labels**. Assign labels only when the event's actual channel mapping is known, in `/etc/srt-status.json`. Set `expected_active` for channels scheduled for a test to distinguish idle from `CHECK NO TRAFFIC`. Existing files with exactly the old CAM6-only default are migrated automatically on `--status-only`; other custom files are preserved.
 
 `sudo srt-status -s 6` shows estimated media-size UDP RX/TX by channel, and distinguishes local loopback (`LO`, e.g. sing-box) vs direct WAN (`WAN`) on the gateway. **These are UDP payload estimates, not video bitrates, SRT loss statistics, or proof of picture quality.** Underlying TCP Reality can mask packet loss from an SRT receiver, but introduce delay or freezes. `FLOW` means only sampled traffic was observed.
 
