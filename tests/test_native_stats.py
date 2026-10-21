@@ -35,7 +35,12 @@ class PatchComposeTests(unittest.TestCase):
         self.assertFalse(already)
         self.assertIn('["-stats:3000", "-statspf:json", "srt://:21111', changed)
         self.assertIn('command: "srt://:21112?', changed)
+        # YAML prepared but old container still running -> do not mark enabled.
         second, already = enable.update_command(changed, 1, argv)
+        self.assertFalse(already)
+        self.assertEqual(changed, second)
+        second, already = enable.update_command(changed, 1,
+            ["-stats:3000", "-statspf:json"] + argv)
         self.assertTrue(already)
         self.assertEqual(changed, second)
 
