@@ -149,12 +149,83 @@ def capture(seconds):
     return seen, max(0.001, time.monotonic() - start)
 
 
+
+def native_snapshot(cam, minutes=2):
+    """Report receiver/source and sender/target SRT protocol samples from Docker JSON logs.
+
+    -stats:N uses a PACKET counter, not a time interval. These are samples from
+    srt_bstats(..., clear=True); loss reports are not a measured path loss rate.
+    """
+    result = cmd(["docker", "logs", "--since", f"{minutes}m", "--timestamps",
+                  "--tail", "1500", f"srt-cam{cam}"], timeout=8.0)
+    if result is None or result.returncode != 0:
+        print(f"STOP: cannot read logs for srt-cam{cam} (check container and Docker permissions)")
+        return 2
+    latest = {}
+    for line in (result.stdout + "\n" + result.stderr).splitlines():
+        head, separator, payload = line.partition(" ")
+        if not separator or not payload.lstrip().startswith("{"):
+            continue
+        try:
+            sample = json.loads(payload.strip())
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(sample, dict) or not isinstance(sample.get("link"), dict):
+            continue
+        recv, send = sample.get("recv"), sample.get("send")
+        if not isinstance(recv, dict) or not isinstance(send, dict):
+            continue
+        received = float(recv.get("packets", 0) or 0)
+        sent = float(send.get("packets", 0) or 0)
+        side = "SOURCE" if received > sent else ("TARGET" if sent > received else None)
+        if side is None:
+            continue  # no media statistics, cannot classify socket
+        latest[side] = (head, sample)
+
+    print(f"CAM{cam} SRT native statistics | last {minutes}m | SOURCE=211{10+cam:02d}, TARGET=111{10+cam:02d}")
+    print("Native counters are per reporting interval; -stats frequency is in MEDIA PACKETS.")
+    if not latest:
+        print("NO STATS: no native JSON samples observed. The source may be idle,")
+        print("or -stats:N -statspf:json is not enabled on this container.")
+        return 1
+
+    def show(side, port):
+        if side not in latest:
+            print(f"{side:<6} UDP {port}: NO SAMPLE (not proof of disconnection)")
+            return
+        stamp, sample = latest[side]
+        link, recv, send = sample["link"], sample["recv"], sample["send"]
+        metrics = recv if side == "SOURCE" else send
+        val = lambda name: metrics.get(name, "N/A")
+        bitrate = metrics.get("mbitRate", "N/A")
+        delay = recv.get("msTsbPdDelay", "N/A") if side == "SOURCE" else "N/A"
+        print(f"{side:<6} UDP {port}  {stamp}  sid={sample.get('sid', '?')}")
+        print(f"       RTT={link.get('rtt', 'N/A')}ms  rate={bitrate}Mb/s"
+              f"  lost={val('packetsLost')}  retrans={val('packetsRetransmitted')}"
+              f"  dropped={val('packetsDropped')}  RX_TSBPD={delay}ms")
+
+    show("SOURCE", 21110 + cam)
+    show("TARGET", 11110 + cam)
+    print("SOURCE metrics = Egypt/remote -> VPS receiver; TARGET = VPS -> Shanghai sender.")
+    print("Lost counts are SRT reports, NOT raw Internet loss percentage;")
+    print("RTT/TSBPD are this socket's own values, NOT the other SRT hop.")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Read-only SRT relay snapshot; root required")
     ap.add_argument("-s", "--seconds", type=int, default=6, help="capture duration, default 6")
     ap.add_argument("--config", default="/etc/srt-status.json", help="optional channel labels/expected_active")
     ap.add_argument("--no-logs", action="store_true", help="skip recent RCV/SND-DROPPED log checks")
+    ap.add_argument("--srt", type=int, metavar="CAM", help="show native SRT stats for one CAM (1..10); no tcpdump")
+    ap.add_argument("--minutes", type=int, default=2, help="native stats search window (1..30 min)")
     args = ap.parse_args()
+    if args.srt is not None:
+        if not 1 <= args.srt <= 10 or not 1 <= args.minutes <= 30:
+            ap.error("--srt must be 1..10 and --minutes 1..30")
+        if not shutil.which("docker"):
+            ap.error("missing tool: docker")
+        return native_snapshot(args.srt, args.minutes)
     if args.seconds < 2 or args.seconds > 30:
         ap.error("seconds must be 2..30")
     for tool in ("docker", "tcpdump"):
