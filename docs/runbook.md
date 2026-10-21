@@ -36,3 +36,21 @@ Accurate per-SRT-session SRT stats (RTT, retransmit, skipped/late, session state
 ## Deployment acceptance
 
 Before live-event approval: verify 10 listeners, correct firewall exposure, one real vMix push/pull per desired direction, bidirectional stability and end-to-end picture quality, recovery on sender and receiver disconnect, and failure behavior when VPS/relevant ISP is unavailable. Two VPS in different networks are needed for genuine primary/backup; this repo only deploys a **single** independent relay host per installation.
+
+## Native SRT protocol diagnostics (opt-in, one channel)
+
+In a test/maintenance window, enable JSON counters on only CAM1, preserving 21111/11111 and the SRT URLs:
+
+```bash
+cd ~/srt-cam && git pull --ff-only
+sudo bash install.sh --status-only
+python3 scripts/enable-native-stats.py --cam 1              # dry run; no changes
+sudo python3 scripts/enable-native-stats.py --cam 1 --apply # restart ONLY CAM1
+sudo srt-status --srt 1 --minutes 2
+```
+
+**Interruption:** `--apply` backs up the ACTIVE Compose file (located from Docker labels), validates it, then force-recreates only CAM1. The original Compose project name is preserved. On failure it attempts to restore the original YAML/container. This is not a hot toggle; only do it during approved tests. The script refuses unfamiliar images, commands, and Compose layouts.
+
+Native `-stats:3000` means **every 3000 media packets**, not milliseconds. Reports go as JSON to normal Docker logs. SOURCE (21111) is the SRT receiver, TARGET (11111) is the SRT sender. Both have independent RTT and loss recovery. Output includes per-report interval `packetsLost`, `packetsRetransmitted`, `packetsDropped` and RX `msTsbPdDelay`. Values are not Internet loss percentages, and `msTsbPdDelay` does not prove remote vMix configuration. Idle/legacy streams show `NO STATS`, not zero loss. No new ports, dashboard or permanent capture.
+
+The original `srt-status -s 6` UDP estimate is unchanged.
