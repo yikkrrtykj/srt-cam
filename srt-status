@@ -34,7 +34,7 @@ def cmd(args, timeout=3.0):
 
 
 def load_config(path):
-    cfg = {"directions": {"6": "SH->EG"}, "expected_active": []}
+    cfg = {"directions": {}, "expected_active": []}
     if os.path.isfile(path):
         with open(path, "r", encoding="utf-8") as f:
             v = json.load(f)
