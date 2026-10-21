@@ -69,8 +69,26 @@ install_status() {
   install -m 0755 "$ROOT_DIR/srt-status" /usr/local/bin/srt-status
   if [[ ! -e /etc/srt-status.json ]]; then
     install -m 0644 "$ROOT_DIR/srt-status.json" /etc/srt-status.json
+  elif python3 - /etc/srt-status.json <<'PY'
+import json
+import sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        existing = json.load(f)
+except (OSError, ValueError):
+    sys.exit(1)
+# Only auto-migrate the previous stock config. User-edited configs must survive.
+sys.exit(0 if existing == {"directions": {"6": "SH->EG"}, "expected_active": []} else 1)
+PY
+  then
+    backup="/etc/srt-status.json.bak-before-default-label-removal"
+    if [[ ! -e "$backup" ]]; then
+      cp -p /etc/srt-status.json "$backup"
+    fi
+    install -m 0644 "$ROOT_DIR/srt-status.json" /etc/srt-status.json
+    log "PASS: migrated old stock CAM6 direction label; backup: $backup"
   else
-    log 'Preserving existing /etc/srt-status.json.'
+    log 'Preserving existing /etc/srt-status.json (custom configuration).'
   fi
   log 'srt-status installed: sudo srt-status -s 6'
 }
