@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Read-only, on-demand SRT relay traffic snapshot for 10 srt-live-transmit containers.
+
+Requires Python 3, Docker CLI, tcpdump and root/CAP_NET_RAW.
+No packet payloads are stored. Bitrates are approximate observed UDP payload rates,
+not decoder/video bitrates, SRT connection states, or packet-loss percentages.
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import selectors
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from collections import defaultdict
+
+PORT_RX_BASE = 21110
+PORT_TX_BASE = 11110
+# tcpdump SLL2 -i any: "ens3  Out IP 1.2.3.4.11114 > 5.6.7.8.65431: UDP, length 1332"
+PKT = re.compile(rb"\b(?P<iface>[a-zA-Z0-9_.:-]+)\s+(?P<direction>In|Out)\s+IP\s+"
+                 rb"\S+\.(?P<src>\d+)\s+>\s+\S+\.(?P<dst>\d+):\s+UDP,\s+length\s+(?P<length>\d+)")
+LOSS = re.compile(r"\bRCV-DROPPED\b|\bSND-DROPPED\b", re.I)
+
+
+def cmd(args, timeout=3.0):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def load_config(path):
+    cfg = {"directions": {"6": "SH->EG"}, "expected_active": []}
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            v = json.load(f)
+        if not isinstance(v, dict):
+            raise ValueError("config must be a JSON object")
+        cfg.update(v)
+    return cfg
+
+
+def inspect_container(n):
+    r = cmd(["docker", "inspect", "-f", "{{.State.Status}}|{{.RestartCount}}", f"srt-cam{n}"])
+    if r is None or r.returncode != 0:
+        return "NOT_FOUND", "-"
+    values = r.stdout.strip().split("|")
+    return values[0] if values else "UNKNOWN", values[1] if len(values) > 1 else "-"
+
+
+def recent_srt_drop(n):
+    r = cmd(["docker", "logs", "--since", "120s", "--tail", "100", f"srt-cam{n}"])
+    if r is None or r.returncode != 0:
+        return "?"
+    lines = (r.stdout + "\n" + r.stderr).splitlines()
+    return "YES" if any(LOSS.search(line) for line in lines) else "-"
+
+
+def process_line(line, counters):
+    m = PKT.search(line)
+    if not m:
+        return
+    name = m.group("iface").decode("ascii", "replace")
+    direction = m.group("direction")
+    # Linux 'any' on lo may expose loopback traffic on both receive/transmit.
+    # Count the locally delivered 'In' copy only to avoid duplicating it.
+    if name == "lo":
+        if direction != b"In":
+            return
+        medium = "LO"
+    else:
+        medium = "WAN"
+        # For WAN interface, input media should arrive from outside; output media goes outside.
+    size = int(m.group("length"))
+    if size < 500:
+        return  # SRT control/handshake generally small; estimate media-sized packets only
+    sp = int(m.group("src")); dp = int(m.group("dst"))
+    if PORT_RX_BASE+1 <= dp <= PORT_RX_BASE+10:
+        if medium == "LO" or direction == b"In":
+            counters[dp-PORT_RX_BASE]["rx"] += size
+            counters[dp-PORT_RX_BASE]["rx_"+medium] += size
+    if PORT_TX_BASE+1 <= sp <= PORT_TX_BASE+10:
+        if medium == "LO" or direction == b"Out":
+            counters[sp-PORT_TX_BASE]["tx"] += size
+            counters[sp-PORT_TX_BASE]["tx_"+medium] += size
+
+
+def capture(seconds):
+    command = ["tcpdump", "-ni", "any", "-q", "-l", "--immediate-mode", "-s", "96",
+               "udp and (portrange 11111-11120 or portrange 21111-21120)"]
+    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    if p.stdout is None:
+        raise RuntimeError("tcpdump stdout unavailable")
+    selector = selectors.DefaultSelector()
+    selector.register(p.stdout, selectors.EVENT_READ)
+    data = b""
+    seen = defaultdict(lambda: defaultdict(int))
+    start = time.monotonic()
+    end = start + seconds
+    try:
+        while time.monotonic() < end:
+            remaining = end - time.monotonic()
+            for _key, _ in selector.select(timeout=min(0.2, max(0, remaining))):
+                chunk = os.read(p.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                data += chunk
+                parts = data.split(b"\n")
+                data = parts.pop()
+                for part in parts:
+                    process_line(part, seen)
+                if len(data) > 1024 * 1024:
+                    data = b""  # malformed/unbounded line guard
+    finally:
+        if p.poll() is None:
+            p.send_signal(signal.SIGINT)  # stop only tcpdump, never the SRT processes
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if p.stdout is None:
+                break
+            readable, _, _ = __import__("select").select([p.stdout], [], [], 0.05)
+            if readable:
+                chunk = os.read(p.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                data += chunk
+                parts = data.split(b"\n")
+                data = parts.pop()
+                for part in parts:
+                    process_line(part, seen)
+            elif p.poll() is not None:
+                break
+        selector.close()
+        if p.poll() is None:
+            p.terminate()
+        try:
+            p.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            p.kill(); p.wait()
+        if data:
+            process_line(data, seen)
+        err = p.stderr.read().decode("utf-8", "replace") if p.stderr else ""
+        if p.returncode not in (0, 130, -signal.SIGINT) and "listening on" not in err:
+            raise RuntimeError("tcpdump failed: " + err.strip()[-300:])
+    return seen, max(0.001, time.monotonic() - start)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Read-only SRT relay snapshot; root required")
+    ap.add_argument("-s", "--seconds", type=int, default=6, help="capture duration, default 6")
+    ap.add_argument("--config", default="/etc/srt-status.json", help="optional channel labels/expected_active")
+    ap.add_argument("--no-logs", action="store_true", help="skip recent RCV/SND-DROPPED log checks")
+    args = ap.parse_args()
+    if args.seconds < 2 or args.seconds > 30:
+        ap.error("seconds must be 2..30")
+    for tool in ("docker", "tcpdump"):
+        if not shutil.which(tool):
+            ap.error(f"missing tool: {tool}")
+    if os.geteuid() != 0:
+        ap.error("run with sudo/root (tcpdump requires packet capture privileges)")
+    try:
+        cfg = load_config(args.config)
+        expected = {int(x) for x in cfg.get("expected_active", [])}
+        labels = {str(k): str(v)[:18] for k, v in cfg.get("directions", {}).items()}
+        states = {n: inspect_container(n) for n in range(1, 11)}
+        counters, elapsed = capture(args.seconds)
+        drops = {n: recent_srt_drop(n) if not args.no_logs else "-" for n in range(1,11)}
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+    print(f"SRT Gateway | {datetime.datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')} | {args.seconds}s UDP sample")
+    print("CAM  FLOW       RX Mb/s  TX Mb/s  TX PATH     EVENT  RESULT")
+    print("---  ---------  -------  -------  ----------  -----  -----------------")
+    for n in range(1, 11):
+        record = counters[n]
+        rx = record["rx"] * 8 / 1e6 / args.seconds
+        tx = record["tx"] * 8 / 1e6 / args.seconds
+        path = "+".join(v for v in ("WAN", "LO") if record["tx_"+v] >= 5000) or "-"
+        state, restarts = states[n]
+        event = drops[n]
+        if state != "running":
+            status = f"STOPPED({state})"
+        elif rx >= .10 and tx >= .10:
+            status = "FLOW"
+        elif rx >= .10 and tx < .10:
+            status = "CHECK OUTPUT"
+        elif tx >= .10 and rx < .10:
+            status = "CHECK INPUT"
+        elif n in expected:
+            status = "CHECK NO TRAFFIC"
+        else:
+            status = "IDLE/UNKNOWN"
+        print(f"{n:>3}  {labels.get(str(n), '?'):<9}  {rx:7.2f}  {tx:7.2f}  {path:<10}  {event:<5}  {status}")
+    print("\nRX/TX = sampled SRT UDP media-sized payload (>=500B), incl. retransmission; NOT video bitrate")
+    print("EVENT=YES: recent SRT RCV/SND-DROPPED log; no logs does NOT mean loss-free")
+    print("FLOW does NOT prove correct pictures. IDLE/UNKNOWN is NOT an error unless channel is expected active.")
+    print("LO=SRT UDP is local to the VPS (e.g. sing-box); WAN=direct public UDP.")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,55 @@
+x-srt-base: &srt-base
+  image: local-srt-gateway
+  network_mode: "host"
+  restart: always
+
+services:
+  srt-cam1:
+    <<: *srt-base
+    container_name: srt-cam1
+    command: "srt://:21111?rcvbuf=33554432 srt://:11111?rcvbuf=33554432 "
+
+  srt-cam2:
+    <<: *srt-base
+    container_name: srt-cam2
+    command: "srt://:21112?rcvbuf=33554432 srt://:11112?rcvbuf=33554432 "
+
+  srt-cam3:
+    <<: *srt-base
+    container_name: srt-cam3
+    command: "srt://:21113?rcvbuf=33554432 srt://:11113?rcvbuf=33554432 "
+
+  srt-cam4:
+    <<: *srt-base
+    container_name: srt-cam4
+    command: "srt://:21114?rcvbuf=33554432 srt://:11114?rcvbuf=33554432 "
+
+  srt-cam5:
+    <<: *srt-base
+    container_name: srt-cam5
+    command: "srt://:21115?rcvbuf=33554432 srt://:11115?rcvbuf=33554432 "
+
+  srt-cam6:
+    <<: *srt-base
+    container_name: srt-cam6
+    command: "srt://:21116?rcvbuf=33554432 srt://:11116?rcvbuf=33554432 "
+
+  srt-cam7:
+    <<: *srt-base
+    container_name: srt-cam7
+    command: "srt://:21117?rcvbuf=33554432 srt://:11117?rcvbuf=33554432 "
+
+  srt-cam8:
+    <<: *srt-base
+    container_name: srt-cam8
+    command: "srt://:21118?rcvbuf=33554432 srt://:11118?rcvbuf=33554432 "
+
+  srt-cam9:
+    <<: *srt-base
+    container_name: srt-cam9
+    command: "srt://:21119?rcvbuf=33554432 srt://:11119?rcvbuf=33554432 "
+
+  srt-cam10:
+    <<: *srt-base
+    container_name: srt-cam10
+    command: "srt://:21120?rcvbuf=33554432 srt://:11120?rcvbuf=33554432 "
