@@ -15,7 +15,12 @@ import sys
 
 
 def run(args, check=True):
-    p = subprocess.run(args, text=True, capture_output=True)
+    try:
+        p = subprocess.run(args, text=True, capture_output=True)
+    except FileNotFoundError:
+        if not check:
+            return subprocess.CompletedProcess(args, 127, "", "not found")
+        raise
     if check and p.returncode:
         raise RuntimeError("command failed: " + " ".join(args) + "\n" + (p.stderr or p.stdout)[-900:])
     return p
@@ -58,7 +63,11 @@ def update_command(text, cam, live_command):
     else:
         argv = shlex.split(raw)
     if len(argv) == 4 and argv[:2] == ["-stats:3000", "-statspf:json"]:
-        return text, True
+        if live_command == argv:
+            return text, True
+        if live_command == argv[2:]:
+            return text, False  # YAML prepared, but running container needs recreation
+        raise ValueError("stats YAML differs from running container command")
     if len(argv) != 2 or not all(isinstance(x, str) and x.startswith("srt://") for x in argv):
         raise ValueError(f"unexpected {service_name} argv; refusing to replace")
     if live_command != argv:
