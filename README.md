@@ -1,5 +1,61 @@
-# SRT CAM
+# SRT CAM — 10-channel lightweight SRT relay
 
-Docker-based `srt-live-transmit` 10-channel relay and read-only remote diagnostics.
+A lightweight Docker deployment of Haivision **SRT Tools `srt-live-transmit`** (not the commercial Haivision SRT Gateway) and a **read-only, on-demand** `srt-status` command. Based on the original field deployment document and 10-channel Compose configuration.
 
-> Deployment instructions will be added in the setup pull request. No production host is modified by this repository initialization.
+## Deployment (new Ubuntu/Debian VPS only)
+
+```bash
+git clone https://github.com/yikkrrtykj/srt-cam.git
+cd srt-cam
+sudo bash install.sh --dry-run
+sudo bash install.sh
+sudo srt-status -s 6
+```
+
+The installer checks for existing `srt-cam*` containers and bound SRT UDP ports before installation and **refuses to overwrite an existing relay**. An already-managed installation is left running on repeat execution. On an existing production VPS, install **only the diagnostic tool**:
+
+```bash
+git clone https://github.com/yikkrrtykj/srt-cam.git
+cd srt-cam
+sudo bash install.sh --status-only
+sudo srt-status -s 6
+```
+
+> `install.sh` changes the host (apt packages, sysctl buffer maximums, image build, service creation, and inbound UFW UDP rules **only if UFW is already active**). Read it before deploying. It does **not** enable UFW or change your cloud-provider firewall. `--status-only` does not alter running relay containers, their sysctl or firewall. New deployments still require a real SRT sender and receiver for acceptance.
+
+## Configuration
+
+| Channel | SRT sender (Caller) sends to VPS | SRT receiver (Caller) pulls from VPS |
+|---|---|---|
+| 1 | UDP 21111 | UDP 11111 |
+| 2 | UDP 21112 | UDP 11112 |
+| … | … | … |
+| 10 | UDP 21120 | UDP 11120 |
+
+Both sides use Caller; server endpoints are Listener. Ten independent Docker containers `srt-cam1` through `srt-cam10`, using host networking. The original YAML is preserved at [`archive/docker-compose.original.yml`](archive/docker-compose.original.yml).
+
+For the current event: **Egypt → Shanghai: 7 channels; Shanghai → Egypt: 2 channels**. **Only CAM6 is confirmed Shanghai → Egypt**; assign actual direction for the other channels in `/etc/srt-status.json` once known. Avoid assuming channels 1–7 map to Egypt without confirmation. Mark the specific channels scheduled for a test in `expected_active` to distinguish idle from `CHECK NO TRAFFIC`.
+
+`sudo srt-status -s 6` shows estimated media-size UDP RX/TX by channel, and distinguishes local loopback (`LO`, e.g. sing-box) vs direct WAN (`WAN`) on the gateway. **These are UDP payload estimates, not video bitrates, SRT loss statistics, or proof of picture quality.** Underlying TCP Reality can mask packet loss from an SRT receiver, but introduce delay or freezes. `FLOW` means only sampled traffic was observed.
+
+## Operational checks
+
+```bash
+docker ps --filter name=srt-cam
+docker logs --since 2m --tail 60 srt-cam6
+sudo srt-status -s 6
+```
+
+- No input: ask sender if vMix Output actually started; check sender → VPS UDP 2111x.
+- Input with no output: ask receiver if vMix Input is connected; check VPS UDP 1111x. `bytes lost` in `srt-live-transmit` relay logs can reflect the absence of a target and is **not** network packet-loss percentage.
+- Input and output but picture corrupted: inspect both **separate** SRT sessions, RTT, retransmits, late/skipped packets, codec and final vMix picture. A healthy server cannot establish where Internet packet loss occurs.
+- Check actual expected-active list before treating `IDLE/UNKNOWN` as a failure.
+
+The original [`srt中转网关.docx`](docs/srt中转网关.docx) is preserved verbatim; see [`docs/legacy-deployment.md`](docs/legacy-deployment.md) for its command-oriented Markdown transcription, and [`docs/runbook.md`](docs/runbook.md) for production notes and limitations.
+
+## Security and compatibility
+
+- Required UDP ingress: **11111–11120 and 21111–21120**. Restrict peer IPs using cloud firewall where possible.
+- No dashboard, DB, persistent packet captures, proxy interception, external pings, or iperf3.
+- Container image uses Ubuntu 22.04 + distro-provided `srt-tools`. On deployment, `docker build` needs internet access; runtime version should be verified in a test VPS.
+- Tested for script syntax and offline parser fixtures; **not yet validated end-to-end on a VPS in this PR**.
