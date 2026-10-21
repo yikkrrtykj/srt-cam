@@ -28,7 +28,12 @@ class PacketParsingTest(unittest.TestCase):
         self.assertEqual(d[4]['tx'], 0)
     def test_config_defaults(self):
         c = mod.load_config('/file/that/does/not/exist')
-        self.assertEqual(c['directions']['6'], 'SH->EG')
+        self.assertEqual(c['directions'], {})
+        self.assertEqual(c['expected_active'], [])
+        import json
+        with (ROOT / 'srt-status.json').open(encoding='utf-8') as f:
+            repo_default = json.load(f)
+        self.assertEqual(repo_default, c)
 
 if __name__ == '__main__':
     unittest.main()
