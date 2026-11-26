@@ -77,3 +77,44 @@ The original `srt-status -s 6` UDP estimate is unchanged.
 - No dashboard, DB, persistent packet captures, proxy interception, external pings, or iperf3.
 - Container image uses Ubuntu 22.04 + distro-provided `srt-tools`. On deployment, `docker build` needs internet access; runtime version should be verified in a test VPS.
 - Tested for script syntax and offline parser fixtures; **not yet validated end-to-end on a VPS in this PR**.
+
+---
+
+## SRT-CAM v2 Platform (Go + TypeScript + Dual-Mode Redundancy)
+
+v2 adds a **decoupled Go control plane (`srt-camd`) with an embedded TypeScript dashboard** and a **pure-Go Mode B UDP passthrough forwarder (`srt-passd`)** while keeping every media channel strictly isolated (restarting the web dashboard never interrupts live streams) and preserving full backward compatibility with v1 `srt-status` / `install.sh`.
+
+### Key Capabilities
+- **Dual Data-Plane Modes**:
+  - **Mode A (`srt-relay`)**: Upgraded Haivision `libsrt 1.5.x` (`deploy/Dockerfile.relay`) 10-channel isolated containers (`2111x / 1111x`) with native JSON stats and bounded log rotation (`deploy/docker-compose.v2.yml`). Ideal for vMix, rapid dual-Caller setup, and dual-hardware redundancy.
+  - **Mode B (`udp-passthrough`)**: Pure-Go L4 UDP forwarder (`cmd/srt-passd`, `deploy/Dockerfile.pass`) for **dual-VPS + Makito X4 native Path Redundancy (hitless failover)** with read-only 16-byte SRT header telemetry (zero decryption, zero added SRT buffering latency).
+- **Bidirectional Multi-VPS Control Plane (`cmd/srt-camd`)**:
+  - Aggregates arbitrary **N VPS nodes** into one dashboard organized by direction (**Venue → Hub** and **Hub → Venue**) and paired **Logical Signal Groups** (primary/backup).
+  - **4-Layer Synchronized Timeline & Automatic Fault Isolation**: Linked ECharts timeline across Layer 1 (Upstream), Layer 2 (Cloud Host CPU / Container 0-Restart / `/proc/net/snmp` UDP buffer drops), Layer 3 (Downstream + `LO/WAN` proxy detection), and Layer 4 (Primary/Backup Fault Band), backed by 7-day SQLite WAL storage and **Evidence Screenshot Mode + PNG Export**.
+  - **Tiered Feishu Alerts**: Debounced interactive cards distinguishing **🟡 Protected Failover (backup carrying live)** vs **🔴 Critical Outage**, with automatic recovery notices and backup-node independent watchdog.
+  - **Safe Operations**: Public browser login (bcrypt + HttpOnly cookie + brute-force lockout, `deploy/Caddyfile.example` for HTTPS) and single-channel restart requiring explicit channel-name confirmation + SQLite audit log.
+
+### Build & Local Demo Preview
+
+```bash
+# 1. Build embedded TypeScript frontend
+cd web && npm install && npm run build && cd ..
+
+# 2. Build zero-CGO single binaries
+CGO_ENABLED=0 go build -o bin/srt-camd ./cmd/srt-camd
+CGO_ENABLED=0 go build -o bin/srt-passd ./cmd/srt-passd
+
+# 3. Generate bcrypt password hash for config.json
+./bin/srt-camd hash-password --password 'YourStrongPassword'
+
+# 4. Run instant offline 3-VPS bidirectional demo (no Docker required)
+./bin/srt-camd --demo --events deploy/event-sheet.example.json --listen 127.0.0.1:8080
+
+# Or build & run with Docker only (no Go/Node needed on the VPS):
+docker build -f deploy/Dockerfile.camd -t srt-camd:v2 .
+docker run --rm -p 8080:8080 -v "$PWD/deploy:/etc/srt-cam:ro" srt-camd:v2 \
+  --demo --events /etc/srt-cam/event-sheet.example.json --listen 0.0.0.0:8080
+```
+
+See [`deploy/config.example.json`](deploy/config.example.json), [`deploy/event-sheet.example.json`](deploy/event-sheet.example.json), [`deploy/srt-camd.service`](deploy/srt-camd.service), and the step-by-step [`docs/makito-redundancy-guide.md`](docs/makito-redundancy-guide.md) for test VPS deployment and Makito X4 unplug-test acceptance.
+

@@ -1,0 +1,231 @@
+{
+  "event_name": "示例场次：海外现场 ↔ 上海远程制作中心",
+  "sites": {
+    "venue": "海外现场",
+    "hub": "上海制作中心"
+  },
+  "signal_groups": [
+    {
+      "id": "en-pgm",
+      "name": "EN-PGM",
+      "direction": "venue_to_hub",
+      "redundancy_type": "makito_bonding",
+      "expected_active": true,
+      "notes": "重要主信号：Mode B 双 VPS 纯四层透传 + Makito X4 硬件无缝主备",
+      "legs": [
+        {
+          "role": "primary",
+          "node_id": "vps-1",
+          "channel_id": "srt-pass1",
+          "mode": "udp-passthrough",
+          "carrier": "电信",
+          "src_device": "现场Encoder#1 Output1 (Path1)",
+          "dst_device": "上海Decoder#1 Input1 (Listener:41111)",
+          "in_port": 31111,
+          "out_port": 41111,
+          "target_addr": "203.0.113.10:41111"
+        },
+        {
+          "role": "backup",
+          "node_id": "vps-3",
+          "channel_id": "srt-pass1",
+          "mode": "udp-passthrough",
+          "carrier": "联通",
+          "src_device": "现场Encoder#1 Output1 (Path2)",
+          "dst_device": "上海Decoder#1 Input1 (Redundancy:41112)",
+          "in_port": 31111,
+          "out_port": 41112,
+          "target_addr": "203.0.113.10:41112"
+        }
+      ]
+    },
+    {
+      "id": "id-pgm",
+      "name": "ID-PGM-M",
+      "direction": "venue_to_hub",
+      "redundancy_type": "single",
+      "expected_active": true,
+      "notes": "Mode A 双端 Call 云端单路",
+      "legs": [
+        {
+          "role": "single",
+          "node_id": "vps-1",
+          "channel_id": "srt-cam2",
+          "mode": "srt-relay",
+          "carrier": "电信",
+          "src_device": "现场Encoder#1 Output2",
+          "dst_device": "上海Decoder#1 Input2",
+          "in_port": 21112,
+          "out_port": 11112
+        }
+      ]
+    },
+    {
+      "id": "cam2",
+      "name": "CAM2",
+      "direction": "venue_to_hub",
+      "redundancy_type": "single",
+      "expected_active": true,
+      "legs": [
+        {
+          "role": "single",
+          "node_id": "vps-1",
+          "channel_id": "srt-cam3",
+          "mode": "srt-relay",
+          "carrier": "联通",
+          "src_device": "现场Encoder#1 Output3",
+          "dst_device": "上海Decoder#1 Input3",
+          "in_port": 21113,
+          "out_port": 11113
+        }
+      ]
+    },
+    {
+      "id": "16mv-1",
+      "name": "16MV#1",
+      "direction": "venue_to_hub",
+      "redundancy_type": "dual_hardware",
+      "expected_active": true,
+      "notes": "双机双路热备：主编码器走电信 VPS-2，备编码器走联通 VPS-3",
+      "legs": [
+        {
+          "role": "primary",
+          "node_id": "vps-2",
+          "channel_id": "srt-cam1",
+          "mode": "srt-relay",
+          "carrier": "电信",
+          "src_device": "现场Encoder#2(主) 主视分板卡1-Out1",
+          "dst_device": "上海Decoder#2(主) Input1",
+          "in_port": 21111,
+          "out_port": 11111
+        },
+        {
+          "role": "backup",
+          "node_id": "vps-3",
+          "channel_id": "srt-cam1",
+          "mode": "srt-relay",
+          "carrier": "联通",
+          "src_device": "现场Encoder#3(备) 主视分板卡1-Out2",
+          "dst_device": "上海Decoder#3(备) Input1",
+          "in_port": 21111,
+          "out_port": 11111
+        }
+      ]
+    },
+    {
+      "id": "ob-pgm",
+      "name": "OB-PGM",
+      "direction": "hub_to_venue",
+      "redundancy_type": "dual_hardware",
+      "expected_active": true,
+      "notes": "制作中心返送现场主信号：主/备两套编解码器分别经 VPS-1 与 VPS-2",
+      "legs": [
+        {
+          "role": "primary",
+          "node_id": "vps-1",
+          "channel_id": "srt-cam5",
+          "mode": "srt-relay",
+          "carrier": "电信",
+          "src_device": "上海Encoder#1(主) D#1 Out1",
+          "dst_device": "现场Decoder#1(主) MT#1 In9",
+          "in_port": 21115,
+          "out_port": 11115
+        },
+        {
+          "role": "backup",
+          "node_id": "vps-2",
+          "channel_id": "srt-cam5",
+          "mode": "srt-relay",
+          "carrier": "备用公网",
+          "src_device": "上海Encoder#2(备) D#2 Out1",
+          "dst_device": "现场Decoder#2(备) MT#2 In9",
+          "in_port": 21115,
+          "out_port": 11115
+        }
+      ]
+    },
+    {
+      "id": "map",
+      "name": "MAP",
+      "direction": "hub_to_venue",
+      "redundancy_type": "dual_hardware",
+      "expected_active": true,
+      "legs": [
+        {
+          "role": "primary",
+          "node_id": "vps-1",
+          "channel_id": "srt-cam6",
+          "mode": "srt-relay",
+          "carrier": "电信",
+          "src_device": "上海Encoder#1(主) D#1 Out2",
+          "dst_device": "现场Decoder#1(主) MT#1 In10",
+          "in_port": 21116,
+          "out_port": 11116
+        },
+        {
+          "role": "backup",
+          "node_id": "vps-2",
+          "channel_id": "srt-cam6",
+          "mode": "srt-relay",
+          "carrier": "备用公网",
+          "src_device": "上海Encoder#2(备) D#2 Out2",
+          "dst_device": "现场Decoder#2(备) MT#2 In10",
+          "in_port": 21116,
+          "out_port": 11116
+        }
+      ]
+    },
+    {
+      "id": "solo-pov",
+      "name": "单人POV",
+      "direction": "hub_to_venue",
+      "redundancy_type": "dual_hardware",
+      "expected_active": true,
+      "legs": [
+        {
+          "role": "primary",
+          "node_id": "vps-1",
+          "channel_id": "srt-cam7",
+          "mode": "srt-relay",
+          "carrier": "电信",
+          "src_device": "上海Encoder#1(主) D#1 Out3",
+          "dst_device": "现场Decoder#1(主) MT#1 In11",
+          "in_port": 21117,
+          "out_port": 11117
+        },
+        {
+          "role": "backup",
+          "node_id": "vps-2",
+          "channel_id": "srt-cam7",
+          "mode": "srt-relay",
+          "carrier": "备用公网",
+          "src_device": "上海Encoder#2(备) D#2 Out3",
+          "dst_device": "现场Decoder#2(备) MT#2 In11",
+          "in_port": 21117,
+          "out_port": 11117
+        }
+      ]
+    },
+    {
+      "id": "vmix-spare",
+      "name": "vMix 临时备用",
+      "direction": "venue_to_hub",
+      "redundancy_type": "single",
+      "expected_active": false,
+      "notes": "偶尔使用 vMix 时启用，不配主备",
+      "legs": [
+        {
+          "role": "single",
+          "node_id": "vps-1",
+          "channel_id": "srt-cam10",
+          "mode": "srt-relay",
+          "carrier": "公网",
+          "src_device": "现场 vMix Output",
+          "dst_device": "上海 vMix Input",
+          "in_port": 21120,
+          "out_port": 11120
+        }
+      ]
+    }
+  ]
+}

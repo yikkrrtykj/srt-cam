@@ -1,0 +1,15 @@
+# Example Caddy reverse proxy for public HTTPS access to srt-camd.
+# Replace monitor.example.com with your domain pointing to this VPS.
+# Caddy automatically issues and renews Let's Encrypt TLS certificates.
+
+monitor.example.com {
+    encode gzip zstd
+    reverse_proxy 127.0.0.1:8080 {
+        flush_interval -1
+    }
+    header {
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "same-origin"
+    }
+}

@@ -1,0 +1,61 @@
+{
+  "node_id": "vps-1",
+  "display_name": "VPS-1 (主节点·电信优化)",
+  "region": "Singapore",
+  "public_ip": "198.51.100.11",
+  "listen_addr": "127.0.0.1:8080",
+  "docker_socket": "/var/run/docker.sock",
+  "db_path": "/var/lib/srt-cam/telemetry.db",
+  "retention_days": 7,
+  "sample_interval_sec": 2,
+  "cluster_token": "REPLACE_WITH_RANDOM_32_CHAR_CLUSTER_TOKEN",
+  "is_primary_monitor": true,
+  "auth": {
+    "username": "admin",
+    "password_hash": "RUN_srt-camd_hash-password_TO_GENERATE",
+    "session_secret": "REPLACE_WITH_RANDOM_32_CHAR_SESSION_SECRET",
+    "cookie_secure": true
+  },
+  "feishu": {
+    "enabled": false,
+    "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/REPLACE_ME",
+    "secret": "",
+    "debounce_sec": 10,
+    "cooldown_sec": 180,
+    "watchdog_sec": 20,
+    "dashboard_base_url": "https://monitor.example.com"
+  },
+  "thresholds": {
+    "min_flow_mbps": 0.1,
+    "high_rtt_ms": 250,
+    "high_loss_per_sample": 20,
+    "high_retrans": 30,
+    "high_nak_lost": 20,
+    "udp_buf_drop_trigger": 10
+  },
+  "peers": [
+    {
+      "node_id": "vps-2",
+      "display_name": "VPS-2 (备节点·电信/公网)",
+      "region": "HongKong",
+      "public_ip": "198.51.100.12",
+      "api_url": "https://vps2.example.com",
+      "api_token": "REPLACE_WITH_RANDOM_32_CHAR_CLUSTER_TOKEN"
+    },
+    {
+      "node_id": "vps-3",
+      "display_name": "VPS-3 (备节点·联通优化)",
+      "region": "Tokyo",
+      "public_ip": "198.51.100.13",
+      "api_url": "https://vps3.example.com",
+      "api_token": "REPLACE_WITH_RANDOM_32_CHAR_CLUSTER_TOKEN"
+    }
+  ],
+  "passthroughs": [
+    {
+      "channel_id": "srt-pass1",
+      "metrics_url": "http://127.0.0.1:19101/stats",
+      "container": "srt-pass1"
+    }
+  ]
+}
