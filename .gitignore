@@ -1,0 +1,23 @@
+# Compiled binaries
+/srt-camd
+/srt-passd
+/bin/
+
+# SQLite runtime files
+*.db
+*.db-wal
+*.db-shm
+
+# Frontend dependencies (web/dist is built into Go embed)
+web/node_modules/
+web/dist/*.js
+web/dist/assets/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# OS / editor noise
+.DS_Store
+*.swp
+*.bak

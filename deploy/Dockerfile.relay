@@ -1,0 +1,36 @@
+# Mode A upgraded SRT relay image (Haivision libsrt 1.5.x with srt-live-transmit)
+# Multi-stage build keeps runtime image small while upgrading beyond Ubuntu 22.04's libsrt 1.4.4.
+
+FROM ubuntu:24.04 AS builder
+
+ARG SRT_VERSION=v1.5.4
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential cmake pkg-config git ca-certificates libssl-dev tclsh \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --depth 1 --branch "${SRT_VERSION}" https://github.com/Haivision/srt.git \
+ && cmake -S srt -B srt/build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DENABLE_APPS=ON \
+      -DENABLE_BONDING=ON \
+      -DENABLE_SHARED=ON \
+      -DENABLE_STATIC=OFF \
+      -DENABLE_UNITTESTS=OFF \
+ && cmake --build srt/build -j"$(nproc)" \
+ && cmake --install srt/build
+
+FROM ubuntu:24.04
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libssl3 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/bin/srt-live-transmit /usr/local/bin/srt-live-transmit
+COPY --from=builder /usr/local/lib/libsrt.so* /usr/local/lib/
+RUN ldconfig
+
+ENTRYPOINT ["srt-live-transmit"]
