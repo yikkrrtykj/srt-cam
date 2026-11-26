@@ -273,8 +273,8 @@ func seedDemoHistory(ctx context.Context, store *storage.Store, cfg config.NodeC
 		Severity:      model.SeverityDegradedProtected,
 		FaultCode:     model.FaultUpstreamOffline,
 		FaultLayer:    "upstream",
-		Summary:       "[电信] 云端透传运行正常（0 重启），主路上行中断 2 分钟；由备路[vps-3/联通] Makito 硬件无缝兜底，画面零中断",
-		ProtectedBy:   "备路[vps-3/联通]",
+		Summary:       "主(vps-1·电信) 入站无流 · 备(vps-3·联通) 在线 (12.2 Mb/s)",
+		ProtectedBy:   "备(vps-3·联通)",
 	})
 	_, _ = store.OpenFaultEvent(ctx, model.FaultEvent{
 		StartTS:       incidentStart,
@@ -287,7 +287,7 @@ func seedDemoHistory(ctx context.Context, store *storage.Store, cfg config.NodeC
 		Severity:      model.SeverityDegradedProtected,
 		FaultCode:     model.FaultDownstreamDegraded,
 		FaultLayer:    "downstream",
-		Summary:       "[电信] 上游与云端正常（0 重启），下游 RTT 飙升至 380ms 并触发丢弃；由备路[vps-2/备用公网] 全程兜底",
-		ProtectedBy:   "备路[vps-2/备用公网]",
+		Summary:       "主(vps-1·电信) 下行抖动 (RTT 380ms / 丢弃 7) · 备(vps-2·备用公网) 在线 (12.1 Mb/s)",
+		ProtectedBy:   "备(vps-2·备用公网)",
 	})
 }

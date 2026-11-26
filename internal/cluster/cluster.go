@@ -343,7 +343,7 @@ func (m *Manager) simulateDemoPeerTimeline(nodeID, channelID string, fromTS, toT
 			HasNativeStats: true,
 			FaultCode:      model.FaultHealthy,
 			FaultLayer:     "none",
-			FaultSummary:   "备路全程稳定兜底（0 丢包，云端 0 重启）",
+			FaultSummary:   "备路正常 · 0 丢包 / 0 重启",
 		})
 		hosts = append(hosts, model.HostSample{
 			Timestamp:  ts,

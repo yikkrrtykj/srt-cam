@@ -27,18 +27,21 @@ export function LoginPage({ nodeName, onLoggedIn }: Props) {
   }
 
   return (
-    <main className="login-shell">
-      <div className="login-card">
-        <h1 style={{ margin: "0 0 4px", fontSize: 20 }}>SRT-CAM v2 控制台</h1>
-        <p style={{ margin: "0 0 20px", fontSize: 13, color: "var(--text-secondary)" }}>
-          {nodeName || "广电双向 SRT 中转与故障定界平台"}
-        </p>
+    <main className="login-wrap">
+      <div className="login-box">
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+          <span className="rail-logo">SRT</span>
+          <div>
+            <h1 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>SRT-CAM Gateway</h1>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{nodeName || "Control Plane"}</div>
+          </div>
+        </div>
 
-        {error && <div className="notice-bar notice-err">{error}</div>}
+        {error && <div className="notice notice-err">{error}</div>}
 
         <form onSubmit={handleSubmit}>
-          <div className="form-field">
-            <label htmlFor="login-user">管理员账号</label>
+          <div className="field">
+            <label htmlFor="login-user">用户名</label>
             <input
               id="login-user"
               className="input"
@@ -48,7 +51,7 @@ export function LoginPage({ nodeName, onLoggedIn }: Props) {
               required
             />
           </div>
-          <div className="form-field">
+          <div className="field">
             <label htmlFor="login-pass">密码</label>
             <input
               id="login-pass"
@@ -63,15 +66,12 @@ export function LoginPage({ nodeName, onLoggedIn }: Props) {
           <button
             type="submit"
             className="btn btn-primary"
-            style={{ width: "100%", marginTop: 6, padding: "9px 14px" }}
+            style={{ width: "100%", marginTop: 4, padding: "8px 12px" }}
             disabled={busy}
           >
-            {busy ? "正在验证..." : "登录控制台"}
+            {busy ? "登录中..." : "登录"}
           </button>
         </form>
-        <p style={{ margin: "14px 0 0", fontSize: 12, color: "var(--text-muted)" }}>
-          公网访问建议配合 HTTPS 反代；连续 5 次密码错误将自动锁定 5 分钟。
-        </p>
       </div>
     </main>
   );

@@ -91,28 +91,28 @@ export function formatUptime(sec: number): string {
   return `${mins}分`;
 }
 
-export function severityText(sev: string): { label: string; cls: string } {
+export function severityText(sev: string): { label: string; cls: string; dot: string } {
   switch (sev) {
     case "HEALTHY":
-      return { label: "正常", cls: "badge-ok" };
+      return { label: "ON AIR", cls: "pill-ok", dot: "dot-ok" };
     case "DEGRADED_PROTECTED":
-      return { label: "降级·备路兜底", cls: "badge-warn" };
+      return { label: "BACKUP", cls: "pill-warn", dot: "dot-warn" };
     case "DEGRADED_SINGLE":
-      return { label: "抖动警告", cls: "badge-warn" };
+      return { label: "DEGRADED", cls: "pill-warn", dot: "dot-warn" };
     case "CRITICAL_OUTAGE":
-      return { label: "紧急异常", cls: "badge-crit" };
+      return { label: "OFFLINE", cls: "pill-crit", dot: "dot-crit" };
     default:
-      return { label: "待机", cls: "badge-idle" };
+      return { label: "STANDBY", cls: "pill-idle", dot: "dot-idle" };
   }
 }
 
 export function redundancyText(t: string): string {
   switch (t) {
     case "makito_bonding":
-      return "Makito 硬件无缝主备";
+      return "Path Redundancy";
     case "dual_hardware":
-      return "双机双路热备";
+      return "双机热备";
     default:
-      return "单路传输";
+      return "单路";
   }
 }

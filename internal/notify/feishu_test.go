@@ -79,7 +79,7 @@ func TestAlertDebounceEscalationAndRecovery(t *testing.T) {
 	healthy.Severity = model.SeverityHealthy
 	healthy.Summary = "主备双路全部正常通流"
 	am.Evaluate(ctx, t0.Add(40*time.Second), "测试场次", []model.SignalGroupLiveView{healthy}, true)
-	if len(fake.cards) != 3 || fake.cards[2].Template != "green" || !strings.Contains(fake.cards[2].Title, "已恢复") {
+	if len(fake.cards) != 3 || fake.cards[2].Template != "green" || !strings.Contains(fake.cards[2].Title, "[恢复]") {
 		t.Fatalf("expected green recovery card, got %+v", fake.cards)
 	}
 

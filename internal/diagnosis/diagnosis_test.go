@@ -184,7 +184,7 @@ func TestEvaluateSignalGroupRedundancy(t *testing.T) {
 	if sev != model.SeverityDegradedProtected {
 		t.Fatalf("severity = %s, want DEGRADED_PROTECTED", sev)
 	}
-	if !strings.Contains(protector, "联通") || !strings.Contains(summary, "零中断") {
+	if !strings.Contains(protector, "联通") || !strings.Contains(summary, "在线") {
 		t.Fatalf("unexpected protected summary=%q protector=%q", summary, protector)
 	}
 

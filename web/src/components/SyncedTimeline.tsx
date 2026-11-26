@@ -4,13 +4,14 @@ import type { ChannelSample, GroupTimelineResponse, LegTimeline } from "../types
 import { formatTime } from "../api";
 
 export interface SyncedTimelineHandle {
-  exportEvidencePNG: (headerLines: string[]) => void;
+  exportReportPNG: (headerLines: string[]) => void;
 }
 
 interface Props {
   data: GroupTimelineResponse;
   showBackupOverlay: boolean;
-  screenshotMode: boolean;
+  cleanView: boolean;
+  theme: "dark" | "light";
 }
 
 const SYNC_GROUP = "srt-cam-4layer-sync";
@@ -33,14 +34,11 @@ function faultSeverityScore(code: string): number {
 }
 
 function legLabel(lt: LegTimeline): string {
-  const role = lt.leg.role === "primary" ? "主路" : lt.leg.role === "backup" ? "备路" : "单路";
+  const role = lt.leg.role === "primary" ? "主" : lt.leg.role === "backup" ? "备" : "单";
   const carrier = lt.leg.carrier ? `·${lt.leg.carrier}` : "";
   return `${role}(${lt.leg.node_id}${carrier})`;
 }
 
-// Convert samples into [ms, value] time-axis pairs, inserting an explicit null break
-// only when a true telemetry gap exceeds GAP_BREAK_SEC. This handles 1-2s clock offsets
-// across independent VPS nodes seamlessly without breaking lines into dots.
 function toTimeSeries<T extends { ts: number }>(
   items: T[],
   pick: (item: T) => number
@@ -73,7 +71,7 @@ function nearestSample(samples: ChannelSample[], targetSec: number): ChannelSamp
 }
 
 export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function SyncedTimeline(
-  { data, showBackupOverlay, screenshotMode },
+  { data, showBackupOverlay, cleanView, theme },
   ref
 ) {
   const layer1Ref = useRef<HTMLDivElement>(null);
@@ -83,12 +81,13 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
   const chartsRef = useRef<echarts.ECharts[]>([]);
 
   useImperativeHandle(ref, () => ({
-    exportEvidencePNG(headerLines: string[]) {
+    exportReportPNG(headerLines: string[]) {
       const charts = chartsRef.current;
       if (charts.length === 0) return;
+      const bg = theme === "dark" ? "#151b23" : "#ffffff";
       const imgs = charts.map((c) => {
         const img = new Image();
-        img.src = c.getDataURL({ type: "png", pixelRatio: 2, backgroundColor: "#ffffff" });
+        img.src = c.getDataURL({ type: "png", pixelRatio: 2, backgroundColor: bg });
         return img;
       });
       Promise.all(
@@ -101,9 +100,9 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         )
       ).then(() => {
         const width = Math.max(...imgs.map((i) => i.width), 1600);
-        const headerH = 44 + headerLines.length * 34;
-        const pad = 28;
-        const gap = 16;
+        const headerH = 44 + headerLines.length * 32;
+        const pad = 24;
+        const gap = 14;
         const totalH = headerH + pad + imgs.reduce((acc, i) => acc + i.height + gap, 0) + pad;
 
         const canvas = document.createElement("canvas");
@@ -112,15 +111,15 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
-        ctx.fillStyle = "#ffffff";
+        ctx.fillStyle = theme === "dark" ? "#0d1117" : "#f0f2f5";
         ctx.fillRect(0, 0, width, totalH);
 
-        ctx.fillStyle = "#0f172a";
+        ctx.fillStyle = "#0a0e14";
         ctx.fillRect(0, 0, width, headerH);
         headerLines.forEach((line, idx) => {
-          ctx.font = idx === 0 ? "bold 28px sans-serif" : "20px sans-serif";
-          ctx.fillStyle = idx === 0 ? "#ffffff" : "#cbd5e1";
-          ctx.fillText(line, 32, 42 + idx * 34);
+          ctx.font = idx === 0 ? "bold 26px sans-serif" : "19px sans-serif";
+          ctx.fillStyle = idx === 0 ? "#ffffff" : "#9aa7b8";
+          ctx.fillText(line, 28, 40 + idx * 32);
         });
 
         let y = headerH + pad;
@@ -130,7 +129,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         }
 
         const link = document.createElement("a");
-        link.download = `SRT-证据-${data.group.name}-${data.from_ts}.png`;
+        link.download = `SRT-${data.group.name}-${data.from_ts}.png`;
         link.href = canvas.toDataURL("image/png");
         link.click();
       });
@@ -148,18 +147,24 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
     echarts.connect(SYNC_GROUP);
     chartsRef.current = instances;
 
+    const isDark = theme === "dark";
+    const axisLineColor = isDark ? "#2d3a4b" : "#cbd5e1";
+    const splitLineColor = isDark ? "#1e2734" : "#f1f5f9";
+    const labelColor = isDark ? "#8b949e" : "#64748b";
+    const legendColor = isDark ? "#9aa7b8" : "#475569";
+
     const visibleLegs = showBackupOverlay ? data.legs : data.legs.slice(0, 1);
     const primaryLeg = visibleLegs[0];
     const backupLeg = visibleLegs[1];
 
-    const baseGrid = { left: 58, right: 58, top: 34, bottom: 26 };
+    const baseGrid = { left: 54, right: 54, top: 32, bottom: 24 };
     const commonTimeAxis = {
       type: "time" as const,
       min: data.from_ts * 1000,
       max: data.to_ts * 1000,
-      axisLine: { lineStyle: { color: "#cbd5e1" } },
+      axisLine: { lineStyle: { color: axisLineColor } },
       axisLabel: {
-        color: "#64748b",
+        color: labelColor,
         fontSize: 11,
         formatter: (v: number) => formatTime(Math.floor(v / 1000)),
       },
@@ -167,50 +172,48 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
 
     const tooltipCommon = {
       trigger: "axis" as const,
-      axisPointer: { type: "cross" as const, lineStyle: { color: "#94a3b8", type: "dashed" as const } },
-      backgroundColor: "rgba(15, 23, 42, 0.94)",
-      borderColor: "#334155",
-      textStyle: { color: "#f8fafc", fontSize: 12 },
+      axisPointer: { type: "cross" as const, lineStyle: { color: "#6e7c8e", type: "dashed" as const } },
+      backgroundColor: isDark ? "rgba(13, 17, 23, 0.96)" : "rgba(15, 23, 42, 0.94)",
+      borderColor: "#324054",
+      textStyle: { color: "#e6edf3", fontSize: 12 },
     };
 
-    // Layer 1: Upstream (Sender -> Cloud)
+    // Layer 1: Ingest (Source -> Gateway)
     const l1Series: echarts.SeriesOption[] = [];
     if (primaryLeg) {
       l1Series.push(
         {
-          name: `${legLabel(primaryLeg)} 入站码率(Mbps)`,
+          name: `${legLabel(primaryLeg)} 入站 Mb/s`,
           type: "line",
-          smooth: false,
           showSymbol: false,
-          lineStyle: { width: 2.2, color: "#1d4ed8" },
-          areaStyle: { color: "rgba(29, 78, 216, 0.08)" },
+          lineStyle: { width: 2, color: "#2f81f7" },
+          areaStyle: { color: "rgba(47, 129, 247, 0.10)" },
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.src_mbps.toFixed(2))),
         },
         {
-          name: `${legLabel(primaryLeg)} 上游RTT(ms)`,
+          name: `${legLabel(primaryLeg)} RTT ms`,
           type: "line",
           yAxisIndex: 1,
           showSymbol: false,
-          lineStyle: { width: 1.5, type: "dashed", color: "#d97706" },
+          lineStyle: { width: 1.4, type: "dashed", color: "#e3b341" },
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.src_rtt_ms.toFixed(1))),
         },
         {
-          name: `${legLabel(primaryLeg)} 上游重传/丢弃`,
+          name: `${legLabel(primaryLeg)} 重传/丢弃`,
           type: "bar",
           yAxisIndex: 1,
-          barMaxWidth: 6,
-          itemStyle: { color: "rgba(220, 38, 38, 0.65)" },
+          barMaxWidth: 5,
+          itemStyle: { color: "rgba(248, 81, 73, 0.72)" },
           data: toTimeSeries(primaryLeg.samples, (s) => s.src_retrans + s.src_dropped),
         }
       );
     }
     if (backupLeg) {
       l1Series.push({
-        name: `${legLabel(backupLeg)} 入站码率(Mbps)`,
+        name: `${legLabel(backupLeg)} 入站 Mb/s`,
         type: "line",
-        smooth: false,
         showSymbol: false,
-        lineStyle: { width: 2, color: "#059669" },
+        lineStyle: { width: 1.9, color: "#3fb950" },
         data: toTimeSeries(backupLeg.samples, (s) => Number(s.src_mbps.toFixed(2))),
       });
     }
@@ -218,52 +221,52 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
     instances[0].setOption({
       animation: false,
       tooltip: tooltipCommon,
-      legend: { top: 2, left: 8, textStyle: { fontSize: 11, color: "#475569" } },
+      legend: { top: 2, left: 6, textStyle: { fontSize: 11, color: legendColor } },
       grid: baseGrid,
       xAxis: commonTimeAxis,
       yAxis: [
-        { type: "value", name: "Mbps", min: 0, splitLine: { lineStyle: { color: "#f1f5f9" } }, axisLabel: { fontSize: 11, color: "#64748b" } },
-        { type: "value", name: "ms / 包", min: 0, splitLine: { show: false }, axisLabel: { fontSize: 11, color: "#64748b" } },
+        { type: "value", name: "Mb/s", min: 0, splitLine: { lineStyle: { color: splitLineColor } }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
+        { type: "value", name: "ms / pkt", min: 0, splitLine: { show: false }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
       ],
       series: l1Series,
     });
 
-    // Layer 2: Cloud Node Health (CPU, UDP RcvbufErrors, Container RestartCount)
+    // Layer 2: Gateway Node Health
     const l2Series: echarts.SeriesOption[] = [];
     if (primaryLeg) {
       l2Series.push(
         {
-          name: `${primaryLeg.leg.node_id} CPU(%)`,
+          name: `${primaryLeg.leg.node_id} CPU%`,
           type: "line",
           showSymbol: false,
-          lineStyle: { width: 1.8, color: "#475569" },
+          lineStyle: { width: 1.6, color: "#8b949e" },
           data: toTimeSeries(primaryLeg.host, (h) => Number(h.cpu_percent.toFixed(1))),
         },
         {
-          name: `${primaryLeg.leg.node_id} 容器重启数`,
+          name: `${primaryLeg.leg.node_id} 进程重启`,
           type: "line",
           step: "end",
           yAxisIndex: 1,
           showSymbol: false,
-          lineStyle: { width: 2, color: "#0f766e" },
+          lineStyle: { width: 2, color: "#3fb950" },
           data: toTimeSeries(primaryLeg.samples, (s) => s.restart_count),
         },
         {
-          name: `${primaryLeg.leg.node_id} 内核UDP缓冲丢包`,
+          name: `${primaryLeg.leg.node_id} UDP 丢包`,
           type: "bar",
           yAxisIndex: 1,
-          barMaxWidth: 8,
-          itemStyle: { color: "#dc2626" },
+          barMaxWidth: 7,
+          itemStyle: { color: "#f85149" },
           data: toTimeSeries(primaryLeg.host, (h) => h.udp_rcvbuf_errors),
         }
       );
     }
     if (backupLeg) {
       l2Series.push({
-        name: `${backupLeg.leg.node_id} CPU(%)`,
+        name: `${backupLeg.leg.node_id} CPU%`,
         type: "line",
         showSymbol: false,
-        lineStyle: { width: 1.4, type: "dashed", color: "#059669" },
+        lineStyle: { width: 1.3, type: "dashed", color: "#3fb950" },
         data: toTimeSeries(backupLeg.host, (h) => Number(h.cpu_percent.toFixed(1))),
       });
     }
@@ -271,52 +274,52 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
     instances[1].setOption({
       animation: false,
       tooltip: tooltipCommon,
-      legend: { top: 2, left: 8, textStyle: { fontSize: 11, color: "#475569" } },
+      legend: { top: 2, left: 6, textStyle: { fontSize: 11, color: legendColor } },
       grid: baseGrid,
       xAxis: commonTimeAxis,
       yAxis: [
-        { type: "value", name: "CPU%", min: 0, max: 100, splitLine: { lineStyle: { color: "#f1f5f9" } }, axisLabel: { fontSize: 11, color: "#64748b" } },
-        { type: "value", name: "重启 / 丢包", min: 0, minInterval: 1, splitLine: { show: false }, axisLabel: { fontSize: 11, color: "#64748b" } },
+        { type: "value", name: "CPU%", min: 0, max: 100, splitLine: { lineStyle: { color: splitLineColor } }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
+        { type: "value", name: "次 / 包", min: 0, minInterval: 1, splitLine: { show: false }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
       ],
       series: l2Series,
     });
 
-    // Layer 3: Downstream (Cloud -> Receiver)
+    // Layer 3: Egress (Gateway -> Destination)
     const l3Series: echarts.SeriesOption[] = [];
     if (primaryLeg) {
       l3Series.push(
         {
-          name: `${legLabel(primaryLeg)} 出站码率(Mbps)`,
+          name: `${legLabel(primaryLeg)} 出站 Mb/s`,
           type: "line",
           showSymbol: false,
-          lineStyle: { width: 2.2, color: "#0284c7" },
-          areaStyle: { color: "rgba(2, 132, 199, 0.08)" },
+          lineStyle: { width: 2, color: "#38bdf8" },
+          areaStyle: { color: "rgba(56, 189, 248, 0.10)" },
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.dst_mbps.toFixed(2))),
         },
         {
-          name: `${legLabel(primaryLeg)} 下游RTT(ms)`,
+          name: `${legLabel(primaryLeg)} RTT ms`,
           type: "line",
           yAxisIndex: 1,
           showSymbol: false,
-          lineStyle: { width: 1.5, type: "dashed", color: "#ea580c" },
+          lineStyle: { width: 1.4, type: "dashed", color: "#f97316" },
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.dst_rtt_ms.toFixed(1))),
         },
         {
-          name: `${legLabel(primaryLeg)} 下游丢弃/NAK`,
+          name: `${legLabel(primaryLeg)} 丢弃 / NAK`,
           type: "bar",
           yAxisIndex: 1,
-          barMaxWidth: 6,
-          itemStyle: { color: "rgba(185, 28, 28, 0.72)" },
+          barMaxWidth: 5,
+          itemStyle: { color: "rgba(248, 81, 73, 0.78)" },
           data: toTimeSeries(primaryLeg.samples, (s) => s.dst_dropped + s.dst_nak_count),
         }
       );
     }
     if (backupLeg) {
       l3Series.push({
-        name: `${legLabel(backupLeg)} 出站码率(Mbps)`,
+        name: `${legLabel(backupLeg)} 出站 Mb/s`,
         type: "line",
         showSymbol: false,
-        lineStyle: { width: 2, color: "#059669" },
+        lineStyle: { width: 1.9, color: "#3fb950" },
         data: toTimeSeries(backupLeg.samples, (s) => Number(s.dst_mbps.toFixed(2))),
       });
     }
@@ -324,36 +327,36 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
     instances[2].setOption({
       animation: false,
       tooltip: tooltipCommon,
-      legend: { top: 2, left: 8, textStyle: { fontSize: 11, color: "#475569" } },
+      legend: { top: 2, left: 6, textStyle: { fontSize: 11, color: legendColor } },
       grid: baseGrid,
       xAxis: commonTimeAxis,
       yAxis: [
-        { type: "value", name: "Mbps", min: 0, splitLine: { lineStyle: { color: "#f1f5f9" } }, axisLabel: { fontSize: 11, color: "#64748b" } },
-        { type: "value", name: "ms / 包", min: 0, splitLine: { show: false }, axisLabel: { fontSize: 11, color: "#64748b" } },
+        { type: "value", name: "Mb/s", min: 0, splitLine: { lineStyle: { color: splitLineColor } }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
+        { type: "value", name: "ms / pkt", min: 0, splitLine: { show: false }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
       ],
       series: l3Series,
     });
 
-    // Layer 4: Automatic Fault Isolation Band + Primary/Backup Comparison + Shared Zoom Slider
+    // Layer 4: Path State Band
     const l4Series: echarts.SeriesOption[] = [];
     if (primaryLeg) {
       l4Series.push({
-        name: `${legLabel(primaryLeg)} 状态`,
+        name: `${legLabel(primaryLeg)}`,
         type: "line",
         step: "end",
         showSymbol: false,
-        lineStyle: { width: 2.4, color: "#dc2626" },
-        areaStyle: { color: "rgba(220, 38, 38, 0.14)" },
+        lineStyle: { width: 2.2, color: "#f85149" },
+        areaStyle: { color: "rgba(248, 81, 73, 0.16)" },
         data: toTimeSeries(primaryLeg.samples, (s) => faultSeverityScore(s.fault_code)),
       });
     }
     if (backupLeg) {
       l4Series.push({
-        name: `${legLabel(backupLeg)} 状态`,
+        name: `${legLabel(backupLeg)}`,
         type: "line",
         step: "end",
         showSymbol: false,
-        lineStyle: { width: 2.2, color: "#059669" },
+        lineStyle: { width: 2, color: "#3fb950" },
         data: toTimeSeries(backupLeg.samples, (s) => faultSeverityScore(s.fault_code)),
       });
     }
@@ -373,20 +376,20 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           if (primaryLeg) {
             const pSample = nearestSample(primaryLeg.samples, tsSec);
             if (pSample && Math.abs(pSample.ts - tsSec) <= GAP_BREAK_SEC) {
-              lines.push(`主路(${primaryLeg.leg.node_id}): ${pSample.fault_summary}`);
+              lines.push(`${legLabel(primaryLeg)}: ${pSample.fault_summary}`);
             }
           }
           if (backupLeg) {
             const bSample = nearestSample(backupLeg.samples, tsSec);
             if (bSample && Math.abs(bSample.ts - tsSec) <= GAP_BREAK_SEC) {
-              lines.push(`备路(${backupLeg.leg.node_id}): ${bSample.fault_summary}`);
+              lines.push(`${legLabel(backupLeg)}: ${bSample.fault_summary}`);
             }
           }
           return lines.join("<br/>");
         },
       },
-      legend: { top: 2, left: 8, textStyle: { fontSize: 11, color: "#475569" } },
-      grid: { left: 58, right: 58, top: 30, bottom: screenshotMode ? 24 : 52 },
+      legend: { top: 2, left: 6, textStyle: { fontSize: 11, color: legendColor } },
+      grid: { left: 54, right: 54, top: 28, bottom: cleanView ? 24 : 50 },
       xAxis: commonTimeAxis,
       yAxis: {
         type: "value",
@@ -395,16 +398,24 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         interval: 1,
         axisLabel: {
           fontSize: 11,
-          color: "#475569",
-          formatter: (v: number) => (v === 0 ? "正常" : v === 1 ? "抖动" : "中断"),
+          color: labelColor,
+          formatter: (v: number) => (v === 0 ? "OK" : v === 1 ? "WARN" : "DOWN"),
         },
-        splitLine: { lineStyle: { color: "#f1f5f9" } },
+        splitLine: { lineStyle: { color: splitLineColor } },
       },
-      dataZoom: screenshotMode
+      dataZoom: cleanView
         ? []
         : [
             { type: "inside", xAxisIndex: 0 },
-            { type: "slider", height: 20, bottom: 6, borderColor: "#cbd5e1" },
+            {
+              type: "slider",
+              height: 18,
+              bottom: 6,
+              borderColor: axisLineColor,
+              backgroundColor: isDark ? "#0d1117" : "#f8fafc",
+              fillerColor: "rgba(47, 129, 247, 0.22)",
+              textStyle: { color: labelColor },
+            },
           ],
       series: l4Series,
     });
@@ -416,40 +427,40 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
       instances.forEach((c) => c.dispose());
       chartsRef.current = [];
     };
-  }, [data, showBackupOverlay, screenshotMode]);
+  }, [data, showBackupOverlay, cleanView, theme]);
 
   return (
     <div className="layer-stack">
-      <div className="layer-card">
-        <div className="layer-head">
-          <span className="layer-title">第 1 层 · 上游入站（发端设备 → 云端）</span>
-          <span className="layer-desc">入站码率 / 上游 RTT / 上游重传与丢弃</span>
+      <div className="layer-box">
+        <div className="layer-bar">
+          <span className="layer-name">入站 · Source → Gateway</span>
+          <span className="layer-meta">Bitrate / RTT / Retrans & Drop</span>
         </div>
-        <div ref={layer1Ref} style={{ width: "100%", height: 175 }} />
+        <div ref={layer1Ref} style={{ width: "100%", height: 164 }} />
       </div>
 
-      <div className="layer-card">
-        <div className="layer-head">
-          <span className="layer-title">第 2 层 · 云端中转节点自身健康度（定责核心铁证）</span>
-          <span className="layer-desc">宿主机 CPU / 容器累计重启数（平线=0重启）/ 内核 UDP 缓冲丢包</span>
+      <div className="layer-box">
+        <div className="layer-bar">
+          <span className="layer-name">节点 · Gateway Host</span>
+          <span className="layer-meta">CPU / Restarts / UDP RcvbufErrors</span>
         </div>
-        <div ref={layer2Ref} style={{ width: "100%", height: 150 }} />
+        <div ref={layer2Ref} style={{ width: "100%", height: 138 }} />
       </div>
 
-      <div className="layer-card">
-        <div className="layer-head">
-          <span className="layer-title">第 3 层 · 下游出站（云端 → 收端设备）</span>
-          <span className="layer-desc">出站码率 / 下游 RTT / 下游丢弃与 Mode B NAK 报丢</span>
+      <div className="layer-box">
+        <div className="layer-bar">
+          <span className="layer-name">出站 · Gateway → Destination</span>
+          <span className="layer-meta">Bitrate / RTT / Drop & NAK</span>
         </div>
-        <div ref={layer3Ref} style={{ width: "100%", height: 175 }} />
+        <div ref={layer3Ref} style={{ width: "100%", height: 164 }} />
       </div>
 
-      <div className="layer-card">
-        <div className="layer-head">
-          <span className="layer-title">第 4 层 · 自动故障定界与主备路径对比带</span>
-          <span className="layer-desc">鼠标悬停查看任意秒的精确三段归因；拖动底部滑块四层同步缩放</span>
+      <div className="layer-box">
+        <div className="layer-bar">
+          <span className="layer-name">状态 · Path Health</span>
+          <span className="layer-meta">OK / WARN / DOWN · 主备同轴对比</span>
         </div>
-        <div ref={layer4Ref} style={{ width: "100%", height: screenshotMode ? 140 : 175 }} />
+        <div ref={layer4Ref} style={{ width: "100%", height: cleanView ? 128 : 164 }} />
       </div>
     </div>
   );
