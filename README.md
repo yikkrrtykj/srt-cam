@@ -109,6 +109,11 @@ CGO_ENABLED=0 go build -o bin/srt-passd ./cmd/srt-passd
 
 # 4. Run instant offline 3-VPS bidirectional demo (no Docker required)
 ./bin/srt-camd --demo --events deploy/event-sheet.example.json --listen 127.0.0.1:8080
+
+# Or build & run with Docker only (no Go/Node needed on the VPS):
+docker build -f deploy/Dockerfile.camd -t srt-camd:v2 .
+docker run --rm -p 8080:8080 -v "$PWD/deploy:/etc/srt-cam:ro" srt-camd:v2 \
+  --demo --events /etc/srt-cam/event-sheet.example.json --listen 0.0.0.0:8080
 ```
 
 See [`deploy/config.example.json`](deploy/config.example.json), [`deploy/event-sheet.example.json`](deploy/event-sheet.example.json), [`deploy/srt-camd.service`](deploy/srt-camd.service), and the step-by-step [`docs/makito-redundancy-guide.md`](docs/makito-redundancy-guide.md) for test VPS deployment and Makito X4 unplug-test acceptance.

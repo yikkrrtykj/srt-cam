@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useRef, forwardRef } from "react";
 import * as echarts from "echarts";
-import type { GroupTimelineResponse, LegTimeline } from "../types";
+import type { ChannelSample, GroupTimelineResponse, LegTimeline } from "../types";
 import { formatTime } from "../api";
 
 export interface SyncedTimelineHandle {
@@ -14,6 +14,7 @@ interface Props {
 }
 
 const SYNC_GROUP = "srt-cam-4layer-sync";
+const GAP_BREAK_SEC = 30;
 
 function faultSeverityScore(code: string): number {
   switch (code) {
@@ -27,7 +28,7 @@ function faultSeverityScore(code: string): number {
     case "DOWNSTREAM_DEGRADED":
       return 1;
     default:
-      return 2; // hard outage / process down / node unreachable
+      return 2;
   }
 }
 
@@ -35,6 +36,40 @@ function legLabel(lt: LegTimeline): string {
   const role = lt.leg.role === "primary" ? "主路" : lt.leg.role === "backup" ? "备路" : "单路";
   const carrier = lt.leg.carrier ? `·${lt.leg.carrier}` : "";
   return `${role}(${lt.leg.node_id}${carrier})`;
+}
+
+// Convert samples into [ms, value] time-axis pairs, inserting an explicit null break
+// only when a true telemetry gap exceeds GAP_BREAK_SEC. This handles 1-2s clock offsets
+// across independent VPS nodes seamlessly without breaking lines into dots.
+function toTimeSeries<T extends { ts: number }>(
+  items: T[],
+  pick: (item: T) => number
+): Array<[number, number | null]> {
+  const out: Array<[number, number | null]> = [];
+  for (let i = 0; i < items.length; i++) {
+    const cur = items[i];
+    if (i > 0 && cur.ts - items[i - 1].ts > GAP_BREAK_SEC) {
+      out.push([(items[i - 1].ts + 1) * 1000, null]);
+    }
+    out.push([cur.ts * 1000, pick(cur)]);
+  }
+  return out;
+}
+
+function nearestSample(samples: ChannelSample[], targetSec: number): ChannelSample | undefined {
+  if (samples.length === 0) return undefined;
+  let lo = 0;
+  let hi = samples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (samples[mid].ts < targetSec) lo = mid + 1;
+    else hi = mid;
+  }
+  const cand = samples[lo];
+  if (lo > 0 && Math.abs(samples[lo - 1].ts - targetSec) < Math.abs(cand.ts - targetSec)) {
+    return samples[lo - 1];
+  }
+  return cand;
 }
 
 export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function SyncedTimeline(
@@ -80,11 +115,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, width, totalH);
 
-        // Header strip for leadership evidence
         ctx.fillStyle = "#0f172a";
         ctx.fillRect(0, 0, width, headerH);
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 26px sans-serif";
         headerLines.forEach((line, idx) => {
           ctx.font = idx === 0 ? "bold 28px sans-serif" : "20px sans-serif";
           ctx.fillStyle = idx === 0 ? "#ffffff" : "#cbd5e1";
@@ -120,33 +152,17 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
     const primaryLeg = visibleLegs[0];
     const backupLeg = visibleLegs[1];
 
-    // Build shared sorted timestamp axis across all legs
-    const tsSet = new Set<number>();
-    visibleLegs.forEach((lt) => {
-      lt.samples.forEach((s) => tsSet.add(s.ts));
-      lt.host.forEach((h) => tsSet.add(h.ts));
-    });
-    const timestamps = Array.from(tsSet).sort((a, b) => a - b);
-    const timeLabels = timestamps.map((ts) => formatTime(ts));
-
-    const mapByTS = <T extends { ts: number }>(arr: T[]) => {
-      const m = new Map<number, T>();
-      arr.forEach((item) => m.set(item.ts, item));
-      return m;
-    };
-
-    const pMap = primaryLeg ? mapByTS(primaryLeg.samples) : new Map();
-    const bMap = backupLeg ? mapByTS(backupLeg.samples) : new Map();
-    const pHostMap = primaryLeg ? mapByTS(primaryLeg.host) : new Map();
-    const bHostMap = backupLeg ? mapByTS(backupLeg.host) : new Map();
-
     const baseGrid = { left: 58, right: 58, top: 34, bottom: 26 };
-    const commonAxis = {
-      type: "category" as const,
-      data: timeLabels,
-      boundaryGap: false,
+    const commonTimeAxis = {
+      type: "time" as const,
+      min: data.from_ts * 1000,
+      max: data.to_ts * 1000,
       axisLine: { lineStyle: { color: "#cbd5e1" } },
-      axisLabel: { color: "#64748b", fontSize: 11 },
+      axisLabel: {
+        color: "#64748b",
+        fontSize: 11,
+        formatter: (v: number) => formatTime(Math.floor(v / 1000)),
+      },
     };
 
     const tooltipCommon = {
@@ -168,7 +184,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           showSymbol: false,
           lineStyle: { width: 2.2, color: "#1d4ed8" },
           areaStyle: { color: "rgba(29, 78, 216, 0.08)" },
-          data: timestamps.map((ts) => pMap.get(ts)?.src_mbps ?? null),
+          data: toTimeSeries(primaryLeg.samples, (s) => Number(s.src_mbps.toFixed(2))),
         },
         {
           name: `${legLabel(primaryLeg)} 上游RTT(ms)`,
@@ -176,7 +192,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           yAxisIndex: 1,
           showSymbol: false,
           lineStyle: { width: 1.5, type: "dashed", color: "#d97706" },
-          data: timestamps.map((ts) => pMap.get(ts)?.src_rtt_ms ?? null),
+          data: toTimeSeries(primaryLeg.samples, (s) => Number(s.src_rtt_ms.toFixed(1))),
         },
         {
           name: `${legLabel(primaryLeg)} 上游重传/丢弃`,
@@ -184,10 +200,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           yAxisIndex: 1,
           barMaxWidth: 6,
           itemStyle: { color: "rgba(220, 38, 38, 0.65)" },
-          data: timestamps.map((ts) => {
-            const s = pMap.get(ts);
-            return s ? s.src_retrans + s.src_dropped : null;
-          }),
+          data: toTimeSeries(primaryLeg.samples, (s) => s.src_retrans + s.src_dropped),
         }
       );
     }
@@ -198,7 +211,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         smooth: false,
         showSymbol: false,
         lineStyle: { width: 2, color: "#059669" },
-        data: timestamps.map((ts) => bMap.get(ts)?.src_mbps ?? null),
+        data: toTimeSeries(backupLeg.samples, (s) => Number(s.src_mbps.toFixed(2))),
       });
     }
 
@@ -207,7 +220,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
       tooltip: tooltipCommon,
       legend: { top: 2, left: 8, textStyle: { fontSize: 11, color: "#475569" } },
       grid: baseGrid,
-      xAxis: commonAxis,
+      xAxis: commonTimeAxis,
       yAxis: [
         { type: "value", name: "Mbps", min: 0, splitLine: { lineStyle: { color: "#f1f5f9" } }, axisLabel: { fontSize: 11, color: "#64748b" } },
         { type: "value", name: "ms / 包", min: 0, splitLine: { show: false }, axisLabel: { fontSize: 11, color: "#64748b" } },
@@ -224,10 +237,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           type: "line",
           showSymbol: false,
           lineStyle: { width: 1.8, color: "#475569" },
-          data: timestamps.map((ts) => {
-            const h = pHostMap.get(ts);
-            return h ? Number(h.cpu_percent.toFixed(1)) : null;
-          }),
+          data: toTimeSeries(primaryLeg.host, (h) => Number(h.cpu_percent.toFixed(1))),
         },
         {
           name: `${primaryLeg.leg.node_id} 容器重启数`,
@@ -236,7 +246,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           yAxisIndex: 1,
           showSymbol: false,
           lineStyle: { width: 2, color: "#0f766e" },
-          data: timestamps.map((ts) => pMap.get(ts)?.restart_count ?? null),
+          data: toTimeSeries(primaryLeg.samples, (s) => s.restart_count),
         },
         {
           name: `${primaryLeg.leg.node_id} 内核UDP缓冲丢包`,
@@ -244,7 +254,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           yAxisIndex: 1,
           barMaxWidth: 8,
           itemStyle: { color: "#dc2626" },
-          data: timestamps.map((ts) => pHostMap.get(ts)?.udp_rcvbuf_errors ?? null),
+          data: toTimeSeries(primaryLeg.host, (h) => h.udp_rcvbuf_errors),
         }
       );
     }
@@ -254,10 +264,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         type: "line",
         showSymbol: false,
         lineStyle: { width: 1.4, type: "dashed", color: "#059669" },
-        data: timestamps.map((ts) => {
-          const h = bHostMap.get(ts);
-          return h ? Number(h.cpu_percent.toFixed(1)) : null;
-        }),
+        data: toTimeSeries(backupLeg.host, (h) => Number(h.cpu_percent.toFixed(1))),
       });
     }
 
@@ -266,7 +273,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
       tooltip: tooltipCommon,
       legend: { top: 2, left: 8, textStyle: { fontSize: 11, color: "#475569" } },
       grid: baseGrid,
-      xAxis: commonAxis,
+      xAxis: commonTimeAxis,
       yAxis: [
         { type: "value", name: "CPU%", min: 0, max: 100, splitLine: { lineStyle: { color: "#f1f5f9" } }, axisLabel: { fontSize: 11, color: "#64748b" } },
         { type: "value", name: "重启 / 丢包", min: 0, minInterval: 1, splitLine: { show: false }, axisLabel: { fontSize: 11, color: "#64748b" } },
@@ -284,7 +291,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           showSymbol: false,
           lineStyle: { width: 2.2, color: "#0284c7" },
           areaStyle: { color: "rgba(2, 132, 199, 0.08)" },
-          data: timestamps.map((ts) => pMap.get(ts)?.dst_mbps ?? null),
+          data: toTimeSeries(primaryLeg.samples, (s) => Number(s.dst_mbps.toFixed(2))),
         },
         {
           name: `${legLabel(primaryLeg)} 下游RTT(ms)`,
@@ -292,7 +299,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           yAxisIndex: 1,
           showSymbol: false,
           lineStyle: { width: 1.5, type: "dashed", color: "#ea580c" },
-          data: timestamps.map((ts) => pMap.get(ts)?.dst_rtt_ms ?? null),
+          data: toTimeSeries(primaryLeg.samples, (s) => Number(s.dst_rtt_ms.toFixed(1))),
         },
         {
           name: `${legLabel(primaryLeg)} 下游丢弃/NAK`,
@@ -300,10 +307,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           yAxisIndex: 1,
           barMaxWidth: 6,
           itemStyle: { color: "rgba(185, 28, 28, 0.72)" },
-          data: timestamps.map((ts) => {
-            const s = pMap.get(ts);
-            return s ? s.dst_dropped + s.dst_nak_count : null;
-          }),
+          data: toTimeSeries(primaryLeg.samples, (s) => s.dst_dropped + s.dst_nak_count),
         }
       );
     }
@@ -313,7 +317,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         type: "line",
         showSymbol: false,
         lineStyle: { width: 2, color: "#059669" },
-        data: timestamps.map((ts) => bMap.get(ts)?.dst_mbps ?? null),
+        data: toTimeSeries(backupLeg.samples, (s) => Number(s.dst_mbps.toFixed(2))),
       });
     }
 
@@ -322,7 +326,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
       tooltip: tooltipCommon,
       legend: { top: 2, left: 8, textStyle: { fontSize: 11, color: "#475569" } },
       grid: baseGrid,
-      xAxis: commonAxis,
+      xAxis: commonTimeAxis,
       yAxis: [
         { type: "value", name: "Mbps", min: 0, splitLine: { lineStyle: { color: "#f1f5f9" } }, axisLabel: { fontSize: 11, color: "#64748b" } },
         { type: "value", name: "ms / 包", min: 0, splitLine: { show: false }, axisLabel: { fontSize: 11, color: "#64748b" } },
@@ -340,10 +344,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         showSymbol: false,
         lineStyle: { width: 2.4, color: "#dc2626" },
         areaStyle: { color: "rgba(220, 38, 38, 0.14)" },
-        data: timestamps.map((ts) => {
-          const s = pMap.get(ts);
-          return s ? faultSeverityScore(s.fault_code) : null;
-        }),
+        data: toTimeSeries(primaryLeg.samples, (s) => faultSeverityScore(s.fault_code)),
       });
     }
     if (backupLeg) {
@@ -353,10 +354,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         step: "end",
         showSymbol: false,
         lineStyle: { width: 2.2, color: "#059669" },
-        data: timestamps.map((ts) => {
-          const s = bMap.get(ts);
-          return s ? faultSeverityScore(s.fault_code) : null;
-        }),
+        data: toTimeSeries(backupLeg.samples, (s) => faultSeverityScore(s.fault_code)),
       });
     }
 
@@ -367,23 +365,29 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         formatter: (params: unknown) => {
           const list = Array.isArray(params) ? params : [];
           if (list.length === 0) return "";
-          const idx = (list[0] as { dataIndex: number }).dataIndex;
-          const ts = timestamps[idx];
-          const pSample = pMap.get(ts);
-          const bSample = bMap.get(ts);
-          const lines = [`<strong>${formatTime(ts)}</strong>`];
-          if (pSample) {
-            lines.push(`主路(${primaryLeg.leg.node_id}): ${pSample.fault_summary}`);
+          const first = list[0] as { value?: [number, number] };
+          const ms = first.value?.[0];
+          if (!ms) return "";
+          const tsSec = Math.floor(ms / 1000);
+          const lines = [`<strong>${formatTime(tsSec)}</strong>`];
+          if (primaryLeg) {
+            const pSample = nearestSample(primaryLeg.samples, tsSec);
+            if (pSample && Math.abs(pSample.ts - tsSec) <= GAP_BREAK_SEC) {
+              lines.push(`主路(${primaryLeg.leg.node_id}): ${pSample.fault_summary}`);
+            }
           }
-          if (bSample && backupLeg) {
-            lines.push(`备路(${backupLeg.leg.node_id}): ${bSample.fault_summary}`);
+          if (backupLeg) {
+            const bSample = nearestSample(backupLeg.samples, tsSec);
+            if (bSample && Math.abs(bSample.ts - tsSec) <= GAP_BREAK_SEC) {
+              lines.push(`备路(${backupLeg.leg.node_id}): ${bSample.fault_summary}`);
+            }
           }
           return lines.join("<br/>");
         },
       },
       legend: { top: 2, left: 8, textStyle: { fontSize: 11, color: "#475569" } },
       grid: { left: 58, right: 58, top: 30, bottom: screenshotMode ? 24 : 52 },
-      xAxis: commonAxis,
+      xAxis: commonTimeAxis,
       yAxis: {
         type: "value",
         min: 0,

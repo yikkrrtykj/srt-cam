@@ -56,6 +56,7 @@ func (c *Collector) CollectOnce(ctx context.Context, sheet config.EventSheet) (m
 
 	now := time.Now()
 	hostSample := c.host.Sample()
+	hostSample.Timestamp = now.Unix()
 
 	// Build local channel lookup from event sheet
 	type localLeg struct {

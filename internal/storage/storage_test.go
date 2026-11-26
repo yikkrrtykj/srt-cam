@@ -114,3 +114,31 @@ func TestStoreInsertQueryAndPrune(t *testing.T) {
 		t.Fatalf("after prune got %d samples, want 5", len(gotAfter))
 	}
 }
+
+func TestStoreFileBackedWAL(t *testing.T) {
+	dbPath := t.TempDir() + "/telemetry.db"
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open file-backed sqlite %s: %v", dbPath, err)
+	}
+	defer st.Close()
+
+	var mode string
+	if err := st.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatalf("query journal_mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", mode)
+	}
+
+	ctx := context.Background()
+	ts := int64(1700000100)
+	if err := st.InsertSamples(ctx, model.HostSample{Timestamp: ts, NodeID: "vps-1", CPUPercent: 10}, nil); err != nil {
+		t.Fatalf("insert host sample into WAL db: %v", err)
+	}
+	hosts, err := st.QueryHostTimeline(ctx, "vps-1", ts-10, ts+10, 100)
+	if err != nil || len(hosts) != 1 {
+		t.Fatalf("query host timeline from WAL db: len=%d err=%v", len(hosts), err)
+	}
+}
+

@@ -96,12 +96,13 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username, passwo
 
 	m.clearFailures(ip)
 	token := m.signToken(username, time.Now().Add(sessionTTL).Unix())
+	isHTTPS := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   m.cfg.CookieSecure,
+		Secure:   m.cfg.CookieSecure && isHTTPS,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
