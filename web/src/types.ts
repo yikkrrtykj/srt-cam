@@ -191,3 +191,18 @@ export interface AuthStatus {
   node_id: string;
   display_name: string;
 }
+
+export interface LogLine {
+  ts?: string;
+  level: "error" | "warn" | "connect" | "stats" | "info";
+  is_stats: boolean;
+  text: string;
+}
+
+export interface ChannelLogsResponse {
+  node_id: string;
+  channel_id: string;
+  fetched_at: number;
+  total_lines: number;
+  lines: LogLine[];
+}

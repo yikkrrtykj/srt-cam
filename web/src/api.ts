@@ -1,6 +1,7 @@
 import type {
   AuditEntry,
   AuthStatus,
+  ChannelLogsResponse,
   EventSheet,
   FaultEvent,
   GroupTimelineResponse,
@@ -62,6 +63,10 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ confirm_channel_id: confirmChannelId }),
       }
+    ),
+  channelLogs: (nodeId: string, channelId: string, tail: number, hideStats: boolean) =>
+    reqJSON<ChannelLogsResponse>(
+      `/api/v1/channels/${encodeURIComponent(nodeId)}/${encodeURIComponent(channelId)}/logs?tail=${tail}&hide_stats=${hideStats ? "1" : "0"}`
     ),
   auditLogs: () => reqJSON<{ entries: AuditEntry[] }>("/api/v1/audit"),
   testFeishu: () => reqJSON<{ ok: boolean }>("/api/v1/alerts/test", { method: "POST" }),

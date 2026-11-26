@@ -111,4 +111,25 @@ func TestAPIAuthOverviewRestartAndEventSheet(t *testing.T) {
 	if !evStore.Get().SignalGroups[0].ExpectedActive {
 		t.Fatalf("expected cam1 ExpectedActive=true")
 	}
+
+	// Channel logs endpoint with hide_stats=1 filtering
+	srv.SetLogsFunc(func(_ context.Context, _ string, _, _ int) (string, error) {
+		return "2026-11-26T20:00:01Z Accepted SRT source connection\n" +
+			"2026-11-26T20:00:02Z {\"sid\":1,\"link\":{\"rtt\":45}}\n" +
+			"2026-11-26T20:00:03Z RCV-DROPPED 2 packets\n", nil
+	})
+	reqLog := httptest.NewRequest(http.MethodGet, "/api/v1/channels/vps-1/srt-cam1/logs?hide_stats=1", nil)
+	reqLog.AddCookie(cookie)
+	recLog := httptest.NewRecorder()
+	handler.ServeHTTP(recLog, reqLog)
+	if recLog.Code != http.StatusOK {
+		t.Fatalf("logs endpoint failed: %d %s", recLog.Code, recLog.Body.String())
+	}
+	var logResp ChannelLogsResponse
+	if err := json.Unmarshal(recLog.Body.Bytes(), &logResp); err != nil {
+		t.Fatal(err)
+	}
+	if logResp.TotalLines != 3 || len(logResp.Lines) != 2 || logResp.Lines[0].Level != "connect" || logResp.Lines[1].Level != "error" {
+		t.Fatalf("unexpected logs response: %+v", logResp)
+	}
 }

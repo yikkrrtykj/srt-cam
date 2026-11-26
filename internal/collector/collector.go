@@ -47,6 +47,63 @@ func (c *Collector) RestartLocalChannel(ctx context.Context, channelID string) e
 	return c.docker.Restart(ctx, channelID, 5)
 }
 
+// ChannelLogs fetches recent timestamped container stdout/stderr logs for one local channel.
+func (c *Collector) ChannelLogs(ctx context.Context, channelID string, sinceSec, tail int) (string, error) {
+	if sinceSec <= 0 {
+		sinceSec = 1800
+	}
+	if tail <= 0 {
+		tail = 300
+	}
+	if tail > 1000 {
+		tail = 1000
+	}
+	if c.cfg.DemoMode {
+		return demoLogsText(c.cfg.NodeID, channelID, time.Now()), nil
+	}
+	return c.docker.RecentLogs(ctx, channelID, sinceSec, tail)
+}
+
+func demoLogsText(nodeID, channelID string, now time.Time) string {
+	t := func(offsetSec int) string {
+		return now.Add(-time.Duration(offsetSec) * time.Second).UTC().Format(time.RFC3339)
+	}
+	if len(channelID) >= 8 && channelID[:8] == "srt-pass" {
+		return fmt.Sprintf(`%s [srt-passd:%s] listening UDP :31111 -> 203.0.113.10:41111 (metrics http://127.0.0.1:19101/stats)
+%s [srt-passd:%s] SRT handshake observed from 198.51.100.41:52104 (AES encrypted payload passthrough)
+%s [srt-passd:%s] FLOW up=12.14Mb/s retrans=0 nak=0 peer=198.51.100.41 medium=WAN
+%s [srt-passd:%s] WARN upstream silent (>5s) node=%s peer=198.51.100.41
+%s [srt-passd:%s] SRT handshake observed from 198.51.100.41:52988 (reconnected)
+%s [srt-passd:%s] FLOW up=12.18Mb/s retrans=1 nak=0 peer=198.51.100.41 medium=WAN`,
+			t(1200), channelID,
+			t(1195), channelID,
+			t(600), channelID,
+			t(480), channelID, nodeID,
+			t(358), channelID,
+			t(10), channelID,
+		)
+	}
+	return fmt.Sprintf(`%s Media path: 'srt://:21115?rcvbuf=33554432' --> 'srt://:11115?rcvbuf=33554432'
+%s Accepted SRT source connection from 198.51.100.21:54312
+%s Accepted SRT target connection from 203.0.113.45:61204
+%s {"sid":101,"link":{"rtt":46.2},"recv":{"packets":1500,"packetsLost":0,"packetsRetransmitted":0,"packetsDropped":0,"msTsbPdDelay":250,"mbitRate":12.1},"send":{"packets":0}}
+%s {"sid":202,"link":{"rtt":53.8},"recv":{"packets":0},"send":{"packets":1500,"packetsLost":0,"packetsRetransmitted":0,"packetsDropped":0,"mbitRate":12.1}}
+%s SND-DROPPED: 7 packets dropped on target socket (rtt=380ms, node=%s)
+%s {"sid":202,"link":{"rtt":381.4},"recv":{"packets":0},"send":{"packets":1500,"packetsLost":44,"packetsRetransmitted":48,"packetsDropped":7,"mbitRate":11.8}}
+%s {"sid":101,"link":{"rtt":45.1},"recv":{"packets":1500,"packetsLost":0,"packetsRetransmitted":0,"packetsDropped":0,"msTsbPdDelay":250,"mbitRate":12.2},"send":{"packets":0}}
+%s {"sid":202,"link":{"rtt":52.9},"recv":{"packets":0},"send":{"packets":1500,"packetsLost":0,"packetsRetransmitted":1,"packetsDropped":0,"mbitRate":12.2}}`,
+		t(1400),
+		t(1395),
+		t(1394),
+		t(600),
+		t(599),
+		t(460), nodeID,
+		t(458),
+		t(12),
+		t(10),
+	)
+}
+
 // CollectOnce gathers one synchronized snapshot of the local host and all local channels
 // referenced in the event sheet (plus default srt-cam1..10 if configured locally).
 func (c *Collector) CollectOnce(ctx context.Context, sheet config.EventSheet) (model.NodeLiveStatus, []model.ChannelSample) {

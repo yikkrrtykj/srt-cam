@@ -236,7 +236,7 @@ export function EventSheetPage({ onSaved }: Props) {
                   >
                     <option value="single">单路</option>
                     <option value="dual_hardware">双机热备</option>
-                    <option value="makito_bonding">Path Redundancy</option>
+                    <option value="makito_bonding">Path Redundancy (单机双路无缝)</option>
                   </select>
                   <label className="switch">
                     <input

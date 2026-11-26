@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import type { GroupTimelineResponse, SignalGroupLiveView } from "../types";
-import { api, formatDateTime, formatUptime, redundancyText, severityText } from "../api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ChannelLogsResponse, GroupTimelineResponse, SignalGroupLiveView } from "../types";
+import { api, formatDateTime, formatTime, formatUptime, redundancyText, severityText } from "../api";
 import { SyncedTimeline, type SyncedTimelineHandle } from "../components/SyncedTimeline";
 import { SafeRestartModal } from "../components/SafeRestartModal";
 
@@ -14,7 +14,7 @@ interface Props {
   theme: "dark" | "light";
 }
 
-type DetailTab = "timeline" | "endpoints" | "events";
+type DetailTab = "timeline" | "endpoints" | "events" | "logs";
 
 const PRESETS = [
   { label: "15m", sec: 15 * 60 },
@@ -49,6 +49,16 @@ export function TimelinePage({
     channelId: string;
     signalName: string;
   } | null>(null);
+
+  // Logs tab state
+  const [logLegIdx, setLogLegIdx] = useState(0);
+  const [logTail, setLogTail] = useState(300);
+  const [hideStats, setHideStats] = useState(true);
+  const [logKeyword, setLogKeyword] = useState("");
+  const [logData, setLogData] = useState<ChannelLogsResponse | null>(null);
+  const [logLoading, setLogLoading] = useState(false);
+  const [logError, setLogError] = useState("");
+
   const chartRef = useRef<SyncedTimelineHandle>(null);
 
   const activeId = selectedGroupId || groups[0]?.id || "";
@@ -70,10 +80,53 @@ export function TimelinePage({
     }
   }
 
+  async function loadLogs(targetData?: GroupTimelineResponse | null) {
+    const src = targetData ?? data;
+    if (!src || src.group.legs.length === 0) return;
+    const idx = logLegIdx < src.group.legs.length ? logLegIdx : 0;
+    const leg = src.group.legs[idx];
+    setLogLoading(true);
+    setLogError("");
+    try {
+      const res = await api.channelLogs(leg.node_id, leg.channel_id, logTail, hideStats);
+      setLogData(res);
+    } catch (err) {
+      setLogError(err instanceof Error ? err.message : "日志加载失败");
+    } finally {
+      setLogLoading(false);
+    }
+  }
+
   useEffect(() => {
+    setLogLegIdx(0);
+    setLogData(null);
     void loadTimeline();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, rangeSec]);
+
+  useEffect(() => {
+    if (detailTab === "logs" && data) {
+      void loadLogs(data);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailTab, data, logLegIdx, logTail, hideStats]);
+
+  const filteredLogs = useMemo(() => {
+    if (!logData) return [];
+    const kw = logKeyword.trim().toLowerCase();
+    if (!kw) return logData.lines;
+    return logData.lines.filter((l) => l.text.toLowerCase().includes(kw) || l.level.includes(kw));
+  }, [logData, logKeyword]);
+
+  function copyLogs() {
+    if (filteredLogs.length === 0) return;
+    const text = filteredLogs
+      .map((l) => `${l.ts ? l.ts + " " : ""}[${l.level.toUpperCase()}] ${l.text}`)
+      .join("\n");
+    void navigator.clipboard?.writeText(text).then(() => {
+      setToast(`已复制 ${filteredLogs.length} 行日志`);
+    });
+  }
 
   function applyCustomWindow() {
     if (!customFrom || !customTo) return;
@@ -190,7 +243,6 @@ export function TimelinePage({
             </div>
 
             <div className="topo-grid">
-              {/* Source Column */}
               <div className="topo-box">
                 <div className="topo-box-label">
                   <span>SOURCE · 发端</span>
@@ -214,7 +266,6 @@ export function TimelinePage({
 
               <div className="topo-arrow">→</div>
 
-              {/* Gateway Column */}
               <div className="topo-box">
                 <div className="topo-box-label">
                   <span>GATEWAY · 云端中转</span>
@@ -242,7 +293,6 @@ export function TimelinePage({
 
               <div className="topo-arrow">→</div>
 
-              {/* Destination Column */}
               <div className="topo-box">
                 <div className="topo-box-label">
                   <span>DESTINATION · 收端</span>
@@ -274,7 +324,7 @@ export function TimelinePage({
             </div>
           </section>
 
-          {/* Route Detail Tabs (HydraSRT RouteItem style) */}
+          {/* Route Detail Tabs */}
           {!cleanView && (
             <div className="tab-bar" role="tablist">
               <button
@@ -297,6 +347,13 @@ export function TimelinePage({
                 onClick={() => setDetailTab("events")}
               >
                 事件日志 ({data.events.length})
+              </button>
+              <button
+                type="button"
+                className={`tab-btn ${detailTab === "logs" ? "active" : ""}`}
+                onClick={() => setDetailTab("logs")}
+              >
+                原始日志
               </button>
             </div>
           )}
@@ -488,6 +545,94 @@ export function TimelinePage({
                   </table>
                 </div>
               )}
+            </section>
+          )}
+
+          {detailTab === "logs" && !cleanView && (
+            <section className="panel">
+              <div className="panel-head">
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                  <div className="seg-group" role="tablist" aria-label="选择主备通道">
+                    {data.group.legs.map((leg, idx) => (
+                      <button
+                        key={`${leg.node_id}-${leg.channel_id}`}
+                        type="button"
+                        className={`seg-btn ${logLegIdx === idx ? "active" : ""}`}
+                        onClick={() => setLogLegIdx(idx)}
+                      >
+                        {leg.role === "primary" ? "主" : leg.role === "backup" ? "备" : "单"} ({leg.node_id}/
+                        {leg.channel_id})
+                      </button>
+                    ))}
+                  </div>
+
+                  <label className="switch" title="隐藏高频 JSON 统计行，聚焦握手、断连和丢包日志">
+                    <input
+                      type="checkbox"
+                      checked={hideStats}
+                      onChange={(e) => setHideStats(e.target.checked)}
+                    />
+                    隐藏 JSON 统计行
+                  </label>
+
+                  <select
+                    className="select mono"
+                    value={logTail}
+                    onChange={(e) => setLogTail(Number(e.target.value))}
+                    aria-label="行数"
+                  >
+                    <option value={100}>最近 100 行</option>
+                    <option value={300}>最近 300 行</option>
+                    <option value={800}>最近 800 行</option>
+                  </select>
+
+                  <input
+                    className="input"
+                    style={{ width: 170 }}
+                    placeholder="过滤关键字 (如 DROPPED)"
+                    value={logKeyword}
+                    onChange={(e) => setLogKeyword(e.target.value)}
+                  />
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {logData && (
+                    <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      显示 {filteredLogs.length}/{logData.total_lines} · {formatTime(logData.fetched_at)}
+                    </span>
+                  )}
+                  <button type="button" className="btn btn-xs" onClick={copyLogs} disabled={filteredLogs.length === 0}>
+                    复制
+                  </button>
+                  <button type="button" className="btn btn-xs btn-primary" onClick={() => void loadLogs()} disabled={logLoading}>
+                    {logLoading ? "读取中..." : "刷新日志"}
+                  </button>
+                </div>
+              </div>
+
+              {logError && (
+                <div className="notice notice-err" style={{ margin: 12 }}>
+                  {logError}
+                </div>
+              )}
+
+              <div className="log-viewer">
+                {logLoading && !logData ? (
+                  <div style={{ padding: 16, color: "var(--text-muted)" }}>正在读取容器日志...</div>
+                ) : filteredLogs.length === 0 ? (
+                  <div style={{ padding: 16, color: "var(--text-muted)" }}>
+                    当前无匹配日志（可取消勾选“隐藏 JSON 统计行”查看原始统计输出）
+                  </div>
+                ) : (
+                  filteredLogs.map((line, i) => (
+                    <div key={i} className={`log-row lvl-${line.level}`}>
+                      <span className="log-ts">{line.ts || "-"}</span>
+                      <span className={`log-lvl lvl-${line.level}`}>{line.level}</span>
+                      <span className="log-text">{line.text}</span>
+                    </div>
+                  ))
+                )}
+              </div>
             </section>
           )}
         </>
