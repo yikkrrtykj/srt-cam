@@ -199,12 +199,20 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.src_rtt_ms.toFixed(1))),
         },
         {
-          name: `${legLabel(primaryLeg)} 重传/丢弃`,
+          name: `${legLabel(primaryLeg)} ARQ 重传`,
           type: "bar",
           yAxisIndex: 1,
           barMaxWidth: 5,
-          itemStyle: { color: "rgba(248, 81, 73, 0.72)" },
-          data: toTimeSeries(primaryLeg.samples, (s) => s.src_retrans + s.src_dropped),
+          itemStyle: { color: "rgba(227, 179, 65, 0.58)" },
+          data: toTimeSeries(primaryLeg.samples, (s) => s.src_retrans),
+        },
+        {
+          name: `${legLabel(primaryLeg)} 未恢复弃包`,
+          type: "bar",
+          yAxisIndex: 1,
+          barMaxWidth: 5,
+          itemStyle: { color: "#f85149" },
+          data: toTimeSeries(primaryLeg.samples, (s) => s.src_dropped),
         }
       );
     }
@@ -287,6 +295,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
     // Layer 3: Egress (Gateway -> Destination)
     const l3Series: echarts.SeriesOption[] = [];
     if (primaryLeg) {
+      const isPass = primaryLeg.leg.mode === "udp-passthrough";
       l3Series.push(
         {
           name: `${legLabel(primaryLeg)} 出站 Mb/s`,
@@ -305,12 +314,20 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.dst_rtt_ms.toFixed(1))),
         },
         {
-          name: `${legLabel(primaryLeg)} 丢弃 / NAK`,
+          name: `${legLabel(primaryLeg)} ${isPass ? "NAK" : "ARQ 重传"}`,
           type: "bar",
           yAxisIndex: 1,
           barMaxWidth: 5,
-          itemStyle: { color: "rgba(248, 81, 73, 0.78)" },
-          data: toTimeSeries(primaryLeg.samples, (s) => s.dst_dropped + s.dst_nak_count),
+          itemStyle: { color: "rgba(249, 115, 22, 0.52)" },
+          data: toTimeSeries(primaryLeg.samples, (s) => (isPass ? s.dst_nak_count : s.dst_retrans)),
+        },
+        {
+          name: `${legLabel(primaryLeg)} ${isPass ? "弃包 DropReq" : "未恢复弃包"}`,
+          type: "bar",
+          yAxisIndex: 1,
+          barMaxWidth: 5,
+          itemStyle: { color: "#f85149" },
+          data: toTimeSeries(primaryLeg.samples, (s) => (isPass ? s.src_dropped : s.dst_dropped)),
         }
       );
     }

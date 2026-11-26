@@ -298,6 +298,15 @@ func (m *Manager) simulateDemoPeers(sheet config.EventSheet) {
 					continue
 				}
 				baseRate := 12.1 + float64(idx%3)*1.4
+				srcPeerIP := fmt.Sprintf("198.51.100.%d", 61+idx+pIdx)
+				dstPeerIP := leg.TargetAddr
+				if dstPeerIP == "" {
+					dstPeerIP = fmt.Sprintf("203.0.113.%d", 31+idx+pIdx)
+				}
+				if grp.Direction == model.DirectionHubToVenue {
+					srcPeerIP = fmt.Sprintf("203.0.113.%d", 31+idx+pIdx)
+					dstPeerIP = fmt.Sprintf("198.51.100.%d", 71+idx+pIdx)
+				}
 				s := model.ChannelSample{
 					Timestamp:      now.Unix(),
 					NodeID:         peer.NodeID,
@@ -311,13 +320,21 @@ func (m *Manager) simulateDemoPeers(sheet config.EventSheet) {
 					PathMedium:     "WAN",
 				}
 				if grp.ExpectedActive {
+					s.SrcPeerIP = srcPeerIP
+					s.DstPeerIP = dstPeerIP
 					s.SrcConnected = true
 					s.DstConnected = true
 					s.SrcMbps = baseRate + 0.25*math.Cos(elapsed/6.0+float64(idx))
 					s.DstMbps = s.SrcMbps
-					s.SrcRTTMs = 39.0 + 4.0*math.Sin(elapsed/8.0+float64(pIdx))
-					s.DstRTTMs = 44.0 + 4.0*math.Cos(elapsed/9.0+float64(pIdx))
-					s.SrcTSBPDMs = 240
+					if leg.Mode != model.ModeUDPPassthrough {
+						s.SrcRTTMs = 37.0 + 3.5*math.Sin(elapsed/8.0+float64(pIdx))
+						s.DstRTTMs = 43.0 + 4.0*math.Cos(elapsed/9.0+float64(pIdx))
+						s.SrcTSBPDMs = 240
+					}
+					if grp.ID == "16mv-1" && leg.Role == "primary" {
+						s.SrcLost = 1
+						s.SrcRetrans = 1
+					}
 				}
 				code, layer, summary := diagnosis.DiagnoseChannel(s, host, diagnosis.ChannelContext{
 					SignalName:     grp.Name,
@@ -366,7 +383,7 @@ func (m *Manager) simulateDemoPeerTimeline(nodeID, channelID string, fromTS, toT
 			mode = model.ModeUDPPassthrough
 		}
 		rate := 12.2 + 0.25*math.Cos(t/12.0)
-		chs = append(chs, model.ChannelSample{
+		cs := model.ChannelSample{
 			Timestamp:      ts,
 			NodeID:         nodeID,
 			ChannelID:      channelID,
@@ -377,14 +394,18 @@ func (m *Manager) simulateDemoPeerTimeline(nodeID, channelID string, fromTS, toT
 			DstConnected:   true,
 			SrcMbps:        rate,
 			DstMbps:        rate,
-			SrcRTTMs:       41.0 + 3.0*math.Sin(t/18.0),
-			DstRTTMs:       46.0 + 3.5*math.Cos(t/22.0),
 			PathMedium:     "WAN",
 			HasNativeStats: true,
+			Encrypted:      mode == model.ModeUDPPassthrough,
 			FaultCode:      model.FaultHealthy,
 			FaultLayer:     "none",
-			FaultSummary:   "备路正常 · 0 丢包 / 0 重启",
-		})
+			FaultSummary:   "备路正常 · 0 弃包 / 0 重启",
+		}
+		if mode != model.ModeUDPPassthrough {
+			cs.SrcRTTMs = 41.0 + 3.0*math.Sin(t/18.0)
+			cs.DstRTTMs = 46.0 + 3.5*math.Cos(t/22.0)
+		}
+		chs = append(chs, cs)
 		hosts = append(hosts, model.HostSample{
 			Timestamp:  ts,
 			NodeID:     nodeID,

@@ -31,6 +31,7 @@ type Packet struct {
 	DestSocketID   uint32
 	PayloadBytes   int
 	NAKLostPackets int
+	DropReqPackets int
 }
 
 // ParseHeader inspects a raw UDP payload as an SRT packet without mutating it.
@@ -54,8 +55,11 @@ func ParseHeader(b []byte) (Packet, bool) {
 		pkt.IsControl = true
 		pkt.ControlType = ControlType((w0 >> 16) & 0x7FFF)
 		pkt.Subtype = uint16(w0 & 0xFFFF)
-		if pkt.ControlType == ControlNAK {
+		switch pkt.ControlType {
+		case ControlNAK:
 			pkt.NAKLostPackets = countNAKPackets(b[16:])
+		case ControlDropReq:
+			pkt.DropReqPackets = countDropReqPackets(b[16:])
 		}
 		return pkt, true
 	}
@@ -102,3 +106,24 @@ func countNAKPackets(cif []byte) int {
 	}
 	return total
 }
+
+// countDropReqPackets counts how many dropped sequence numbers are encoded in an SRT
+// Message Drop Request (0x0007) CIF: [firstSeq(32), lastSeq(32)]. Falls back to 1 if CIF is omitted.
+func countDropReqPackets(cif []byte) int {
+	if len(cif) < 8 {
+		return 1
+	}
+	first := binary.BigEndian.Uint32(cif[0:4]) & 0x7FFFFFFF
+	last := binary.BigEndian.Uint32(cif[4:8]) & 0x7FFFFFFF
+	var span uint32
+	if last >= first {
+		span = last - first + 1
+	} else {
+		span = (0x7FFFFFFF - first) + last + 2
+	}
+	if span == 0 || span > 100000 {
+		return 1
+	}
+	return int(span)
+}
+

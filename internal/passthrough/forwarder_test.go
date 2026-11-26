@@ -95,6 +95,23 @@ func TestForwarderBidirectionalAndTelemetry(t *testing.T) {
 		t.Fatalf("return NAK packet mutated")
 	}
 
+	// Encoder sends an SRT DropReq (0x0007) signaling 2 unrecovered dropped packets [500..501]
+	dropReqPkt := make([]byte, 16+8)
+	binary.BigEndian.PutUint32(dropReqPkt[0:4], uint32(1<<31)|(uint32(srtparse.ControlDropReq)<<16))
+	binary.BigEndian.PutUint32(dropReqPkt[16:20], 500)
+	binary.BigEndian.PutUint32(dropReqPkt[20:24], 501)
+	if _, err := encConn.Write(dropReqPkt); err != nil {
+		t.Fatal(err)
+	}
+	_ = decoderConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	dn, _, err := decoderConn.ReadFromUDP(recvBuf)
+	if err != nil {
+		t.Fatalf("decoder read DropReq: %v", err)
+	}
+	if !bytes.Equal(recvBuf[:dn], dropReqPkt) {
+		t.Fatalf("DropReq packet mutated during passthrough")
+	}
+
 	// Wait for 1s sampler tick
 	time.Sleep(1200 * time.Millisecond)
 	snap := fwd.Snapshot()
@@ -113,4 +130,8 @@ func TestForwarderBidirectionalAndTelemetry(t *testing.T) {
 	if snap.NAKReports != 1 || snap.NAKLostPackets != 3 {
 		t.Fatalf("NAK = (%d reports, %d lost), want (1, 3)", snap.NAKReports, snap.NAKLostPackets)
 	}
+	if snap.DropReqPackets != 2 {
+		t.Fatalf("DropReqPackets = %d, want 2", snap.DropReqPackets)
+	}
 }
+

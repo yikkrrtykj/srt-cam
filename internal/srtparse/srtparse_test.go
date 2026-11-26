@@ -72,5 +72,28 @@ func TestParseControlTypesAndShortBuffer(t *testing.T) {
 		if !ok || !pkt.IsControl || pkt.ControlType != ct {
 			t.Fatalf("failed to parse control type %d", ct)
 		}
+		if ct == ControlDropReq && pkt.DropReqPackets != 1 {
+			t.Fatalf("header-only DropReqPackets = %d, want 1", pkt.DropReqPackets)
+		}
 	}
 }
+
+func TestParseDropReqControlPacket(t *testing.T) {
+	// 16-byte header + [firstSeq=500, lastSeq=503] => 4 unrecovered dropped packets
+	buf := make([]byte, 16+8)
+	binary.BigEndian.PutUint32(buf[0:4], uint32(1<<31)|(uint32(ControlDropReq)<<16))
+	binary.BigEndian.PutUint32(buf[16:20], 500)
+	binary.BigEndian.PutUint32(buf[20:24], 503)
+
+	pkt, ok := ParseHeader(buf)
+	if !ok {
+		t.Fatalf("expected valid DropReq packet")
+	}
+	if !pkt.IsControl || pkt.ControlType != ControlDropReq {
+		t.Fatalf("expected ControlDropReq, got isControl=%v type=%d", pkt.IsControl, pkt.ControlType)
+	}
+	if pkt.DropReqPackets != 4 {
+		t.Fatalf("DropReqPackets = %d, want 4", pkt.DropReqPackets)
+	}
+}
+
