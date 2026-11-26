@@ -57,6 +57,26 @@ type GroupTimelineResponse struct {
 	Events         []model.FaultEvent       `json:"events"`
 }
 
+// LogsFunc fetches recent raw logs for a single local channel container.
+type LogsFunc func(ctx context.Context, channelID string, sinceSec, tail int) (string, error)
+
+// LogLine is one parsed log entry returned to the route detail Logs tab.
+type LogLine struct {
+	TS      string `json:"ts,omitempty"`
+	Level   string `json:"level"` // error, warn, connect, stats, info
+	IsStats bool   `json:"is_stats"`
+	Text    string `json:"text"`
+}
+
+// ChannelLogsResponse is the payload for GET /api/v1/channels/{nodeID}/{channelID}/logs.
+type ChannelLogsResponse struct {
+	NodeID     string    `json:"node_id"`
+	ChannelID  string    `json:"channel_id"`
+	FetchedAt  int64     `json:"fetched_at"`
+	TotalLines int       `json:"total_lines"`
+	Lines      []LogLine `json:"lines"`
+}
+
 // Server serves authenticated dashboard REST/SSE APIs, peer cluster APIs, and the embedded SPA.
 type Server struct {
 	cfg        config.NodeConfig
@@ -65,6 +85,7 @@ type Server struct {
 	authMgr    *auth.Manager
 	clusterMgr *cluster.Manager
 	restartFn  RestartFunc
+	logsFn     LogsFunc
 	testFeishu func(ctx context.Context) error
 	staticFS   fs.FS
 
@@ -98,6 +119,11 @@ func NewServer(
 		staticFS:   staticFS,
 		sseSubs:    make(map[chan []byte]struct{}),
 	}
+}
+
+// SetLogsFunc attaches the local container log fetcher used by the Logs tab and peer log proxy.
+func (s *Server) SetLogsFunc(fn LogsFunc) {
+	s.logsFn = fn
 }
 
 // UpdateSnapshot stores the latest aggregated snapshot and notifies connected SSE browsers.
@@ -235,6 +261,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/event-sheet", s.withAuth(s.handlePutEventSheet))
 	mux.HandleFunc("PATCH /api/v1/signal-groups/{groupID}/expected-active", s.withAuth(s.handleToggleExpectedActive))
 	mux.HandleFunc("POST /api/v1/channels/{nodeID}/{channelID}/restart", s.withAuth(s.handleRestartChannel))
+	mux.HandleFunc("GET /api/v1/channels/{nodeID}/{channelID}/logs", s.withAuth(s.handleChannelLogs))
 	mux.HandleFunc("GET /api/v1/audit", s.withAuth(s.handleAudit))
 	mux.HandleFunc("POST /api/v1/alerts/test", s.withAuth(s.handleTestAlert))
 
@@ -244,6 +271,7 @@ func (s *Server) Handler() http.Handler {
 	}))
 	mux.HandleFunc("GET /api/peer/live", s.withClusterAuth(s.handlePeerLive))
 	mux.HandleFunc("GET /api/peer/timeline", s.withClusterAuth(s.handlePeerTimeline))
+	mux.HandleFunc("GET /api/peer/logs", s.withClusterAuth(s.handlePeerLogs))
 	mux.HandleFunc("POST /api/peer/restart", s.withClusterAuth(s.handlePeerRestart))
 
 	// Embedded SPA static frontend
@@ -650,6 +678,110 @@ func (s *Server) handlePeerRestart(w http.ResponseWriter, r *http.Request) {
 		Detail:   "由集群控制台发起的单路安全重启",
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleChannelLogs(w http.ResponseWriter, r *http.Request, _ string) {
+	nodeID := r.PathValue("nodeID")
+	channelID := r.PathValue("channelID")
+	sinceSec := int(parseInt64Query(r, "since", 1800))
+	tail := int(parseInt64Query(r, "tail", 300))
+	if tail < 20 {
+		tail = 20
+	}
+	if tail > 1000 {
+		tail = 1000
+	}
+	hideStats := r.URL.Query().Get("hide_stats") == "1" || r.URL.Query().Get("hide_stats") == "true"
+
+	var raw string
+	var err error
+	if nodeID == s.cfg.NodeID {
+		if s.logsFn == nil {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "logs fetcher not configured"})
+			return
+		}
+		raw, err = s.logsFn(r.Context(), channelID, sinceSec, tail)
+	} else {
+		raw, err = s.clusterMgr.QueryPeerLogs(r.Context(), nodeID, channelID, sinceSec, tail)
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "日志读取失败：" + err.Error()})
+		return
+	}
+
+	all := parseLogLines(raw)
+	filtered := make([]LogLine, 0, len(all))
+	for _, l := range all {
+		if hideStats && l.IsStats {
+			continue
+		}
+		filtered = append(filtered, l)
+	}
+	writeJSON(w, http.StatusOK, ChannelLogsResponse{
+		NodeID:     nodeID,
+		ChannelID:  channelID,
+		FetchedAt:  time.Now().Unix(),
+		TotalLines: len(all),
+		Lines:      filtered,
+	})
+}
+
+func (s *Server) handlePeerLogs(w http.ResponseWriter, r *http.Request) {
+	channelID := r.URL.Query().Get("channel_id")
+	if channelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "channel_id required"})
+		return
+	}
+	if s.logsFn == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "logs fetcher not configured"})
+		return
+	}
+	sinceSec := int(parseInt64Query(r, "since", 1800))
+	tail := int(parseInt64Query(r, "tail", 300))
+	raw, err := s.logsFn(r.Context(), channelID, sinceSec, tail)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"raw": raw})
+}
+
+func parseLogLines(raw string) []LogLine {
+	var out []LogLine
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		tsStr := ""
+		text := trimmed
+		if sp := strings.IndexByte(trimmed, ' '); sp > 0 {
+			if parsed, err := time.Parse(time.RFC3339Nano, trimmed[:sp]); err == nil {
+				tsStr = parsed.Local().Format("15:04:05")
+				text = strings.TrimSpace(trimmed[sp+1:])
+			}
+		}
+		isStats := strings.HasPrefix(text, "{") && strings.Contains(text, `"link"`)
+		level := "info"
+		lower := strings.ToLower(text)
+		switch {
+		case isStats:
+			level = "stats"
+		case strings.Contains(lower, "dropped") || strings.Contains(lower, "error") || strings.Contains(lower, "disconnected") || strings.Contains(lower, "failed"):
+			level = "error"
+		case strings.Contains(lower, "warn") || strings.Contains(lower, "silent") || strings.Contains(lower, "lost"):
+			level = "warn"
+		case strings.Contains(lower, "accepted") || strings.Contains(lower, "connected") || strings.Contains(lower, "handshake"):
+			level = "connect"
+		}
+		out = append(out, LogLine{
+			TS:      tsStr,
+			Level:   level,
+			IsStats: isStats,
+			Text:    text,
+		})
+	}
+	return out
 }
 
 func (s *Server) spaHandler(assets fs.FS) http.Handler {

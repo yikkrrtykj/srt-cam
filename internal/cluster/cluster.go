@@ -178,6 +178,46 @@ func (m *Manager) RestartPeerChannel(ctx context.Context, nodeID, channelID, ope
 	return nil
 }
 
+// QueryPeerLogs fetches raw container logs from a remote peer VPS via GET /api/peer/logs.
+func (m *Manager) QueryPeerLogs(ctx context.Context, nodeID, channelID string, sinceSec, tail int) (string, error) {
+	if m.cfg.DemoMode {
+		now := time.Now().UTC()
+		return fmt.Sprintf("%s [%s/%s] Accepted SRT source connection (backup path)\n%s [%s/%s] FLOW 12.2 Mb/s · 0 drops · 0 restarts",
+			now.Add(-900*time.Second).Format(time.RFC3339), nodeID, channelID,
+			now.Add(-5*time.Second).Format(time.RFC3339), nodeID, channelID), nil
+	}
+	peer, ok := m.findPeer(nodeID)
+	if !ok {
+		return "", fmt.Errorf("peer node %q not configured", nodeID)
+	}
+	q := url.Values{}
+	q.Set("channel_id", channelID)
+	q.Set("since", fmt.Sprintf("%d", sinceSec))
+	q.Set("tail", fmt.Sprintf("%d", tail))
+	endpoint := strings.TrimRight(peer.APIURL, "/") + "/api/peer/logs?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+peer.APIToken)
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("peer %s logs HTTP %d", nodeID, resp.StatusCode)
+	}
+	var payload struct {
+		Raw string `json:"raw"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	return payload.Raw, nil
+}
+
 func (m *Manager) findPeer(nodeID string) (config.PeerNodeConfig, bool) {
 	for _, p := range m.cfg.Peers {
 		if p.NodeID == nodeID {

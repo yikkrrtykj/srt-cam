@@ -348,7 +348,7 @@ export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
                 filteredGroups.map((grp) => {
                   const sev = severityText(grp.severity);
                   return (
-                    <tr key={grp.id} className="clickable">
+                    <tr key={grp.id} className="clickable" onClick={() => onOpenRoute(grp.id)}>
                       <td>
                         <span className={`pill ${sev.cls}`}>
                           <span className={`dot ${sev.dot}`} />
@@ -357,7 +357,14 @@ export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
                       </td>
 
                       <td>
-                        <button type="button" className="route-link" onClick={() => onOpenRoute(grp.id)}>
+                        <button
+                          type="button"
+                          className="route-link"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenRoute(grp.id);
+                          }}
+                        >
                           {grp.name}
                         </button>
                         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
@@ -438,7 +445,7 @@ export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
                         </div>
                       </td>
 
-                      <td>
+                      <td onClick={(e) => e.stopPropagation()}>
                         <label className="switch" title="开启后异常触发飞书告警">
                           <input
                             type="checkbox"
@@ -448,7 +455,7 @@ export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
                         </label>
                       </td>
 
-                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
                           className="btn btn-xs btn-primary"
