@@ -30,6 +30,7 @@ type NodeConfig struct {
 	Thresholds        ThresholdConfig  `json:"thresholds"`
 	Peers             []PeerNodeConfig `json:"peers"`
 	Passthroughs      []PassTarget     `json:"passthroughs"`
+	Previews          []PreviewTarget  `json:"previews,omitempty"`
 	DemoMode          bool             `json:"demo_mode,omitempty"`
 }
 
@@ -77,6 +78,15 @@ type PassTarget struct {
 	ChannelID  string `json:"channel_id"`  // e.g., "srt-pass1"
 	MetricsURL string `json:"metrics_url"` // e.g., "http://127.0.0.1:19101/stats"
 	Container  string `json:"container,omitempty"`
+}
+
+// PreviewTarget configures optional low-CPU keyframe thumbnail snapshots for a channel.
+// InputURL can be an HTTP(S) JPEG/PNG snapshot URL (e.g., from Makito/vMix/MediaMTX) or a
+// local MPEG-TS/UDP/SRT/RTSP preview feed grabbed via ffmpeg (-skip_frame nokey).
+type PreviewTarget struct {
+	ChannelID   string `json:"channel_id"`             // e.g., "srt-cam5"
+	InputURL    string `json:"input_url"`              // e.g., "udp://127.0.0.1:29115" or "http://.../thumb.jpg"
+	IntervalSec int    `json:"interval_sec,omitempty"` // default 5, min 3
 }
 
 // EventSheet models a broadcast production's bidirectional signal routing & primary/backup pairing.

@@ -1,11 +1,13 @@
-import { Fragment, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { LegLiveView, OverviewResponse, SignalGroupLiveView } from "../types";
-import { api, formatTime, redundancyText, severityText } from "../api";
+import { api, redundancyText, severityText } from "../api";
 import { SafeRestartModal } from "../components/SafeRestartModal";
-import { SignalHealthPanel } from "../components/SignalHealthPanel";
+import { RouteThumbnail } from "../components/RouteThumbnail";
+import { HaivisionDrawer } from "../components/HaivisionDrawer";
 
 interface Props {
   overview: OverviewResponse;
+  theme: "dark" | "light";
   onOpenRoute: (groupId: string) => void;
   onRefresh: () => void;
 }
@@ -19,67 +21,72 @@ interface RestartTarget {
   signalName: string;
 }
 
-function legDotClass(leg: LegLiveView): string {
-  if (!leg.node_online) return "dot-crit";
-  switch (leg.sample.fault_code) {
-    case "HEALTHY":
-      return "dot-ok";
-    case "IDLE_EXPECTED_OFF":
-      return "dot-idle";
-    case "UPSTREAM_OFFLINE":
-    case "DOWNSTREAM_OFFLINE":
-    case "CLOUD_PROCESS_DOWN":
-    case "NODE_UNREACHABLE":
-      return "dot-crit";
-    default:
-      return "dot-warn";
-  }
+function LockBadgeIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+      <rect x="3" y="7" width="10" height="7" rx="1.6" />
+      <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+    </svg>
+  );
 }
 
-export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
+function ChartIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <polyline points="3 17 9 11 13 15 21 7" />
+      <polyline points="15 7 21 7 21 13" />
+    </svg>
+  );
+}
+
+function LayersIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <polygon points="12 3 2 8 12 13 22 8 12 3" />
+      <polyline points="2 13 12 18 22 13" />
+      <polyline points="2 18 12 23 22 18" />
+    </svg>
+  );
+}
+
+function RestartIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <polyline points="3 3 3 8 8 8" />
+    </svg>
+  );
+}
+
+function primaryDisplayLeg(grp: SignalGroupLiveView): LegLiveView | undefined {
+  return grp.legs.find((l) => l.role === "primary") ?? grp.legs[0];
+}
+
+export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props) {
   const [filter, setFilter] = useState<FilterTab>("all");
   const [query, setQuery] = useState("");
-  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  const [expandedId, setExpandedId] = useState<string | null>(() => {
+    const relay = overview.groups.find(
+      (g) => g.expected_active && g.legs.some((l) => l.mode === "srt-relay")
+    );
+    return relay?.id ?? overview.groups[0]?.id ?? null;
+  });
   const [restartTarget, setRestartTarget] = useState<RestartTarget | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [testingFeishu, setTestingFeishu] = useState(false);
 
-  function toggleExpand(groupId: string) {
-    setExpandedIds((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
-  }
-
   const activeGroups = overview.groups.filter((g) => g.expected_active);
   const healthyCount = activeGroups.filter((g) => g.severity === "HEALTHY").length;
-  const backupCount = activeGroups.filter((g) => g.severity === "DEGRADED_PROTECTED").length;
-  const degradedCount = activeGroups.filter((g) => g.severity === "DEGRADED_SINGLE").length;
+  const attentionCount = activeGroups.filter(
+    (g) =>
+      g.severity === "CRITICAL_OUTAGE" ||
+      g.severity === "DEGRADED_PROTECTED" ||
+      g.severity === "DEGRADED_SINGLE"
+  ).length;
   const offlineCount = activeGroups.filter((g) => g.severity === "CRITICAL_OUTAGE").length;
-  const onlineNodes = overview.nodes.filter((n) => n.online).length;
-
-  const totalInMbps = overview.groups.reduce(
+  const totalMbps = overview.groups.reduce(
     (sum, g) => sum + g.legs.reduce((s, l) => s + l.sample.src_mbps, 0),
     0
-  );
-  const totalOutMbps = overview.groups.reduce(
-    (sum, g) => sum + g.legs.reduce((s, l) => s + l.sample.dst_mbps, 0),
-    0
-  );
-  const totalUDPDrops = overview.nodes.reduce((sum, n) => sum + n.host.udp_rcvbuf_errors, 0);
-  const avgCPU =
-    overview.nodes.length > 0
-      ? overview.nodes.reduce((sum, n) => sum + n.host.cpu_percent, 0) / overview.nodes.length
-      : 0;
-
-  // HydraSRT-style Attention List: only routes requiring operator attention
-  const attentionRoutes = useMemo(
-    () =>
-      overview.groups.filter(
-        (g) =>
-          g.expected_active &&
-          (g.severity === "CRITICAL_OUTAGE" ||
-            g.severity === "DEGRADED_PROTECTED" ||
-            g.severity === "DEGRADED_SINGLE")
-      ),
-    [overview.groups]
   );
 
   const filteredGroups = useMemo(() => {
@@ -141,423 +148,249 @@ export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
         <div className={`notice ${toast.kind === "ok" ? "notice-ok" : "notice-err"}`}>{toast.text}</div>
       )}
 
-      {/* Top Operations Summary Strip (HydraSRT Dashboard pattern) */}
-      <section className="metrics-row" aria-label="系统指标">
-        <div className="metric-tile">
-          <div className="metric-head">
-            <span>路由状态</span>
-            <span className="mono">{activeGroups.length}/{overview.groups.length} 监控</span>
-          </div>
-          <div className="metric-val mono">
-            <span style={{ color: "var(--ok)" }}>{healthyCount}</span>
-            <span style={{ color: "var(--text-muted)", fontSize: 15 }}> / {activeGroups.length}</span>
-          </div>
-          <div className="metric-sub mono">
-            <span>正常 {healthyCount}</span>
-            <span style={{ color: backupCount + degradedCount > 0 ? "var(--warn)" : undefined }}>
-              备路/抖动 {backupCount + degradedCount}
-            </span>
-            <span style={{ color: offlineCount > 0 ? "var(--crit)" : undefined }}>
-              中断 {offlineCount}
-            </span>
-          </div>
-        </div>
-
-        <div className="metric-tile">
-          <div className="metric-head">
-            <span>主备冗余</span>
-            <span>Failover</span>
-          </div>
-          <div
-            className="metric-val"
-            style={{
-              color:
-                offlineCount > 0
-                  ? "var(--crit)"
-                  : backupCount > 0
-                  ? "var(--warn)"
-                  : "var(--ok)",
-            }}
-          >
-            {offlineCount > 0
-              ? `${offlineCount} 路中断`
-              : backupCount > 0
-              ? `${backupCount} 路备路在播`
-              : "全部主备就绪"}
-          </div>
-          <div className="metric-sub">
-            <span>备路接管 {backupCount}</span>
-            <span>抖动 {degradedCount}</span>
-          </div>
-        </div>
-
-        <div className="metric-tile">
-          <div className="metric-head">
-            <span>汇总流量</span>
-            <span className="mono">SRT + UDP</span>
-          </div>
-          <div className="metric-val mono">{totalInMbps.toFixed(1)} Mb/s</div>
-          <div className="metric-sub mono">
-            <span>入 {totalInMbps.toFixed(1)} Mb/s</span>
-            <span>出 {totalOutMbps.toFixed(1)} Mb/s</span>
-          </div>
-        </div>
-
-        <div className="metric-tile">
-          <div className="metric-head">
-            <span>中转节点</span>
-            <span className="mono">{formatTime(overview.updated_at)}</span>
-          </div>
-          <div className="metric-val mono">
-            {onlineNodes} / {overview.nodes.length}
-            <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)", marginLeft: 8 }}>
-              在线
-            </span>
-          </div>
-          <div className="metric-sub mono">
-            <span>均载 CPU {avgCPU.toFixed(1)}%</span>
-            <span style={{ color: totalUDPDrops > 0 ? "var(--crit)" : "var(--ok)" }}>
-              UDP 丢包 {totalUDPDrops}
-            </span>
-          </div>
-        </div>
-      </section>
-
-      {/* Attention List (HydraSRT signature operations panel) */}
-      {attentionRoutes.length > 0 && (
-        <section className={`panel attention-panel ${offlineCount > 0 ? "has-crit" : ""}`}>
-          <div className="panel-head">
-            <span className="panel-title">
-              <span className={`dot ${offlineCount > 0 ? "dot-crit" : "dot-warn"}`} />
-              需关注路由 ({attentionRoutes.length})
-            </span>
-          </div>
-          <div style={{ overflowX: "auto" }}>
-            <table className="gw-table">
-              <thead>
-                <tr>
-                  <th style={{ width: 92 }}>状态</th>
-                  <th style={{ width: 130 }}>路由</th>
-                  <th style={{ width: 160 }}>方向</th>
-                  <th>当前状态摘要</th>
-                  <th style={{ width: 80, textAlign: "right" }}>查看</th>
-                </tr>
-              </thead>
-              <tbody>
-                {attentionRoutes.map((grp) => {
-                  const sev = severityText(grp.severity);
-                  return (
-                    <tr key={grp.id} className="clickable">
-                      <td>
-                        <span className={`pill ${sev.cls}`}>{sev.label}</span>
-                      </td>
-                      <td>
-                        <button type="button" className="route-link" onClick={() => onOpenRoute(grp.id)}>
-                          {grp.name}
-                        </button>
-                      </td>
-                      <td style={{ color: "var(--text-secondary)" }}>{grp.direction_label}</td>
-                      <td>{grp.summary}</td>
-                      <td style={{ textAlign: "right" }}>
-                        <button type="button" className="btn btn-xs btn-primary" onClick={() => onOpenRoute(grp.id)}>
-                          详情
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      {/* Main Routes Table (Haivision SRT Gateway + HydraSRT style) */}
-      <section className="panel">
-        <div className="panel-head">
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-            <div className="seg-group" role="tablist" aria-label="方向筛选">
-              <button
-                type="button"
-                className={`seg-btn ${filter === "all" ? "active" : ""}`}
-                onClick={() => setFilter("all")}
-              >
-                全部 ({overview.groups.length})
-              </button>
-              <button
-                type="button"
-                className={`seg-btn ${filter === "venue_to_hub" ? "active" : ""}`}
-                onClick={() => setFilter("venue_to_hub")}
-              >
-                {venueName} → {hubName}
-              </button>
-              <button
-                type="button"
-                className={`seg-btn ${filter === "hub_to_venue" ? "active" : ""}`}
-                onClick={() => setFilter("hub_to_venue")}
-              >
-                {hubName} → {venueName}
-              </button>
-              <button
-                type="button"
-                className={`seg-btn ${filter === "attention" ? "active" : ""}`}
-                onClick={() => setFilter("attention")}
-              >
-                仅异常 ({attentionRoutes.length})
-              </button>
-            </div>
-            <input
-              className="input"
-              style={{ width: 200 }}
-              placeholder="搜索信号 / 设备 / 节点 / 运营商"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {/* Compact Haivision-style Top Control Bar */}
+      <div className="hv-toolbar">
+        <div className="hv-toolbar-left">
+          <div className="seg-group" role="tablist" aria-label="方向筛选">
             <button
               type="button"
-              className="btn"
-              onClick={handleTestFeishu}
-              disabled={testingFeishu}
+              className={`seg-btn ${filter === "all" ? "active" : ""}`}
+              onClick={() => setFilter("all")}
             >
-              {testingFeishu ? "发送中..." : "测试飞书"}
+              全部 ({overview.groups.length})
             </button>
-            <button type="button" className="btn" onClick={onRefresh}>
-              刷新
+            <button
+              type="button"
+              className={`seg-btn ${filter === "venue_to_hub" ? "active" : ""}`}
+              onClick={() => setFilter("venue_to_hub")}
+            >
+              {venueName} → {hubName}
+            </button>
+            <button
+              type="button"
+              className={`seg-btn ${filter === "hub_to_venue" ? "active" : ""}`}
+              onClick={() => setFilter("hub_to_venue")}
+            >
+              {hubName} → {venueName}
+            </button>
+            <button
+              type="button"
+              className={`seg-btn ${filter === "attention" ? "active" : ""}`}
+              onClick={() => setFilter("attention")}
+            >
+              异常 ({attentionCount})
             </button>
           </div>
+
+          <input
+            className="input"
+            style={{ width: 190 }}
+            placeholder="搜索信号 / 节点..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
         </div>
 
-        <div style={{ overflowX: "auto" }}>
-          <table className="gw-table">
-            <thead>
-              <tr>
-                <th style={{ width: 34 }} aria-label="展开" />
-                <th style={{ width: 92 }}>状态</th>
-                <th style={{ width: 170 }}>路由 / 模式</th>
-                <th>传输路径（Source → Gateway → Destination）</th>
-                <th style={{ width: 120 }}>码率 (Mb/s)</th>
-                <th style={{ width: 205 }}>RTT / 救回 / 弃包</th>
-                <th style={{ width: 72 }}>告警</th>
-                <th style={{ width: 118, textAlign: "right" }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredGroups.length === 0 ? (
-                <tr>
-                  <td colSpan={8} style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>
-                    无匹配路由
-                  </td>
-                </tr>
-              ) : (
-                filteredGroups.map((grp) => {
-                  const sev = severityText(grp.severity);
-                  const isExpanded = !!expandedIds[grp.id];
-                  return (
-                    <Fragment key={grp.id}>
-                      <tr className="clickable" onClick={() => onOpenRoute(grp.id)}>
-                        <td style={{ paddingRight: 4 }} onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            className={`expand-btn ${isExpanded ? "is-open" : ""}`}
-                            aria-expanded={isExpanded}
-                            title={isExpanded ? "收起单路健康面板" : "展开单路健康面板"}
-                            onClick={() => toggleExpand(grp.id)}
-                          >
-                            {isExpanded ? "▾" : "▸"}
-                          </button>
-                        </td>
+        <div className="hv-toolbar-right">
+          <span className="hv-summary-chip mono">
+            <span className={`dot ${offlineCount > 0 ? "dot-crit" : attentionCount > 0 ? "dot-warn" : "dot-ok"}`} />
+            <span>
+              {healthyCount}/{activeGroups.length} 正常
+            </span>
+            <span className="hv-pipe">|</span>
+            <span>{totalMbps.toFixed(0)} Mb/s</span>
+          </span>
+          <button
+            type="button"
+            className="btn btn-xs"
+            onClick={handleTestFeishu}
+            disabled={testingFeishu}
+          >
+            {testingFeishu ? "发送中..." : "测试飞书"}
+          </button>
+          <button type="button" className="btn btn-xs" onClick={onRefresh}>
+            刷新
+          </button>
+        </div>
+      </div>
 
-                        <td>
-                          <span className={`pill ${sev.cls}`}>
-                            <span className={`dot ${sev.dot}`} />
-                            {sev.label}
-                          </span>
-                        </td>
+      {/* Haivision SRT Gateway Clean Route Card Stack */}
+      <div className="hv-list">
+        {filteredGroups.length === 0 ? (
+          <div className="panel" style={{ padding: 28, textAlign: "center", color: "var(--text-muted)" }}>
+            无匹配路由
+          </div>
+        ) : (
+          filteredGroups.map((grp) => {
+            const leg = primaryDisplayLeg(grp);
+            const sev = severityText(grp.severity);
+            const isOpen = expandedId === grp.id;
 
-                        <td>
-                          <button
-                            type="button"
-                            className="route-link"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onOpenRoute(grp.id);
-                            }}
-                          >
-                            {grp.name}
-                          </button>
-                          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                            {grp.direction_label} · {redundancyText(grp.redundancy_type)}
-                          </div>
-                        </td>
+            const s = leg?.sample;
+            const isPass = leg?.mode === "udp-passthrough";
+            const totalDropped = s
+              ? isPass
+                ? s.src_dropped
+                : s.src_dropped + s.dst_dropped
+              : 0;
+            const flowing = !!(leg?.node_online && s && s.src_mbps >= 0.1);
+            const protoText = isPass ? "TS over SRT (Pass)" : "TS over SRT";
+            const endpointText = leg
+              ? `${leg.node_id} :${leg.in_port}${!isPass ? `→:${leg.out_port}` : ""}`
+              : "-";
 
-                        <td>
-                          <div className="leg-flow-list">
-                            {grp.legs.map((leg) => {
-                              const roleTag =
-                                leg.role === "primary" ? "主" : leg.role === "backup" ? "备" : "单";
-                              return (
-                                <div key={`${leg.node_id}-${leg.channel_id}`} className="leg-flow-row">
-                                  <span className={`dot ${legDotClass(leg)}`} />
-                                  <span className="pill pill-idle" style={{ padding: "0 5px", fontSize: 10 }}>
-                                    {roleTag}
-                                    {leg.carrier ? `·${leg.carrier}` : ""}
-                                  </span>
-                                  <span className="flow-hop">{leg.src_device || "Source"}</span>
-                                  <span className="flow-sep">→</span>
-                                  <span className="flow-node mono">
-                                    {leg.node_id}:{leg.in_port}
-                                    {leg.mode === "udp-passthrough" ? " UDP" : `/${leg.out_port}`}
-                                  </span>
-                                  <span className="flow-sep">→</span>
-                                  <span className="flow-hop">{leg.dst_device || "Destination"}</span>
-                                  {leg.sample.path_medium.includes("LO") && (
-                                    <span className="pill pill-warn" style={{ padding: "0 5px", fontSize: 10 }}>
-                                      LO
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </td>
+            const statusColor =
+              grp.severity === "HEALTHY"
+                ? "var(--ok)"
+                : grp.severity === "CRITICAL_OUTAGE"
+                ? "var(--crit)"
+                : grp.severity === "IDLE"
+                ? "var(--idle)"
+                : "var(--warn)";
 
-                        <td className="mono">
-                          <div className="leg-flow-list">
-                            {grp.legs.map((leg) => (
-                              <div key={`${leg.node_id}-${leg.channel_id}`}>
-                                {leg.sample.src_mbps.toFixed(1)}
-                                <span style={{ color: "var(--text-muted)" }}> / </span>
-                                {leg.sample.dst_mbps.toFixed(1)}
-                              </div>
-                            ))}
-                          </div>
-                        </td>
+            return (
+              <section key={grp.id} className={`hv-card sev-${grp.severity} ${isOpen ? "is-open" : ""}`}>
+                <div
+                  className="hv-card-row"
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isOpen}
+                  onClick={() => setExpandedId(isOpen ? null : grp.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setExpandedId(isOpen ? null : grp.id);
+                    }
+                  }}
+                >
+                  {/* 16:9 Live Keyframe Thumbnail */}
+                  {leg && <RouteThumbnail leg={leg} label={grp.name} />}
 
-                        <td className="mono">
-                          <div className="leg-flow-list">
-                            {grp.legs.map((leg) => {
-                              const s = leg.sample;
-                              const flowing = s.src_mbps >= 0.1;
-                              if (leg.mode === "udp-passthrough") {
-                                return (
-                                  <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 11 }}>
-                                    <span style={{ color: "var(--text-muted)" }}>重传</span> {s.src_retrans} ·{" "}
-                                    <span style={{ color: "var(--text-muted)" }}>NAK</span> {s.dst_nak_count} ·{" "}
-                                    <span
-                                      style={{
-                                        color:
-                                          s.src_dropped > 0
-                                            ? "var(--crit)"
-                                            : flowing
-                                            ? "var(--ok)"
-                                            : "var(--text-muted)",
-                                        fontWeight: s.src_dropped > 0 ? 700 : 500,
-                                      }}
-                                    >
-                                      {s.src_dropped > 0 ? `弃包 ${s.src_dropped}` : "0 弃包"}
-                                    </span>
-                                  </div>
-                                );
-                              }
-                              const totalDropped = s.src_dropped + s.dst_dropped;
-                              const totalRetrans = s.src_retrans + s.dst_retrans;
-                              return (
-                                <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 11 }}>
-                                  {s.src_rtt_ms > 0 ? `${s.src_rtt_ms.toFixed(0)}` : "-"}/
-                                  {s.dst_rtt_ms > 0 ? `${s.dst_rtt_ms.toFixed(0)}ms` : "-"}
-                                  <span style={{ color: "var(--text-muted)" }}> · </span>
-                                  {totalRetrans > 0 && totalDropped === 0 && (
-                                    <span style={{ color: "var(--accent)", marginRight: 5 }}>
-                                      救回 {totalRetrans}
-                                    </span>
-                                  )}
-                                  <span
-                                    style={{
-                                      color:
-                                        totalDropped > 0
-                                          ? "var(--crit)"
-                                          : flowing
-                                          ? "var(--ok)"
-                                          : "var(--text-muted)",
-                                      fontWeight: totalDropped > 0 ? 700 : 500,
-                                    }}
-                                  >
-                                    {totalDropped > 0 ? `弃 ${s.src_dropped}/${s.dst_dropped}` : "0 弃包"}
-                                  </span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </td>
-
-                        <td onClick={(e) => e.stopPropagation()}>
-                          <label className="switch" title="开启后异常触发飞书告警">
-                            <input
-                              type="checkbox"
-                              checked={grp.expected_active}
-                              onChange={() => handleToggleActive(grp)}
-                            />
-                          </label>
-                        </td>
-
-                        <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            className="btn btn-xs btn-primary"
-                            onClick={() => onOpenRoute(grp.id)}
-                          >
-                            详情
-                          </button>{" "}
-                          {grp.legs[0] && (
-                            <button
-                              type="button"
-                              className="btn btn-xs"
-                              title={`重启 ${grp.legs[0].node_id}/${grp.legs[0].channel_id}`}
-                              onClick={() =>
-                                setRestartTarget({
-                                  nodeId: grp.legs[0].node_id,
-                                  nodeName: grp.legs[0].node_name,
-                                  channelId: grp.legs[0].channel_id,
-                                  signalName: grp.name,
-                                })
-                              }
-                            >
-                              重启
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-
-                      {isExpanded && (
-                        <tr className="expand-row">
-                          <td colSpan={8}>
-                            <SignalHealthPanel
-                              group={grp}
-                              compact
-                              onOpenRoute={onOpenRoute}
-                              onRestartLeg={(leg) =>
-                                setRestartTarget({
-                                  nodeId: leg.node_id,
-                                  nodeName: leg.node_name,
-                                  channelId: leg.channel_id,
-                                  signalName: grp.name,
-                                })
-                              }
-                            />
-                          </td>
-                        </tr>
+                  {/* Minimal 2-Line Haivision Route Identity */}
+                  <div className="hv-card-main">
+                    <div className="hv-card-title-row">
+                      <span className="hv-status-icon" style={{ color: statusColor }}>
+                        {s?.encrypted ? (
+                          <LockBadgeIcon />
+                        ) : (
+                          <span className={`dot ${sev.dot}`} />
+                        )}
+                      </span>
+                      <span className="hv-card-name">{grp.name}</span>
+                      {grp.severity !== "HEALTHY" && (
+                        <span className={`pill ${sev.cls}`}>{sev.label}</span>
                       )}
-                    </Fragment>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                      {grp.protected_by && (
+                        <span className="hv-sub-tag">{grp.protected_by} 在播</span>
+                      )}
+                    </div>
+
+                    <div className="hv-card-meta mono">
+                      <span>{protoText}</span>
+                      <span className="hv-pipe">|</span>
+                      <span>{endpointText}</span>
+                      <span className="hv-pipe">|</span>
+                      <span>{s ? `${s.src_mbps.toFixed(1)} Mb/s` : "-"}</span>
+                      {!isPass && s && s.src_rtt_ms > 0 && (
+                        <>
+                          <span className="hv-pipe">|</span>
+                          <span>{s.src_rtt_ms.toFixed(0)} ms</span>
+                        </>
+                      )}
+                      <span className="hv-pipe">|</span>
+                      <span
+                        style={{
+                          color:
+                            totalDropped > 0
+                              ? "var(--crit)"
+                              : flowing
+                              ? "var(--ok)"
+                              : "var(--text-muted)",
+                          fontWeight: totalDropped > 0 ? 700 : 500,
+                        }}
+                      >
+                        {totalDropped > 0 ? `弃包 ${totalDropped}` : "0 弃包"}
+                      </span>
+                      {grp.legs.length >= 2 && (
+                        <>
+                          <span className="hv-pipe">|</span>
+                          <span>{redundancyText(grp.redundancy_type)}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Quiet Haivision Right Action Icons */}
+                  <div className="hv-card-actions" onClick={(e) => e.stopPropagation()}>
+                    <label className="switch" title={grp.expected_active ? "已开启飞书告警" : "待机（不触发告警）"}>
+                      <input
+                        type="checkbox"
+                        checked={grp.expected_active}
+                        onChange={() => handleToggleActive(grp)}
+                      />
+                    </label>
+
+                    <button
+                      type="button"
+                      className={`hv-icon-btn ${isOpen ? "is-active" : ""}`}
+                      title={isOpen ? "收起实时曲线与统计" : "展开实时曲线与统计"}
+                      aria-label="统计曲线"
+                      onClick={() => setExpandedId(isOpen ? null : grp.id)}
+                    >
+                      <ChartIcon />
+                    </button>
+
+                    <button
+                      type="button"
+                      className="hv-icon-btn"
+                      title="4层排障时间轴 / 原始日志 / 导出报告"
+                      aria-label="4层排障"
+                      onClick={() => onOpenRoute(grp.id)}
+                    >
+                      <LayersIcon />
+                    </button>
+
+                    {leg && (
+                      <button
+                        type="button"
+                        className="hv-icon-btn"
+                        title={`安全重启 ${leg.node_id}/${leg.channel_id}`}
+                        aria-label="重启通道"
+                        onClick={() =>
+                          setRestartTarget({
+                            nodeId: leg.node_id,
+                            nodeName: leg.node_name,
+                            channelId: leg.channel_id,
+                            signalName: grp.name,
+                          })
+                        }
+                      >
+                        <RestartIcon />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {isOpen && (
+                  <HaivisionDrawer
+                    group={grp}
+                    theme={theme}
+                    onOpenTimeline={onOpenRoute}
+                    onRestartLeg={(targetLeg) =>
+                      setRestartTarget({
+                        nodeId: targetLeg.node_id,
+                        nodeName: targetLeg.node_name,
+                        channelId: targetLeg.channel_id,
+                        signalName: grp.name,
+                      })
+                    }
+                  />
+                )}
+              </section>
+            );
+          })
+        )}
+      </div>
 
       {restartTarget && (
         <SafeRestartModal

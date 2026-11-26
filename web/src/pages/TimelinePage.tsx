@@ -3,6 +3,7 @@ import type { ChannelLogsResponse, GroupTimelineResponse, SignalGroupLiveView } 
 import { api, formatDateTime, formatTime, formatUptime, redundancyText, severityText } from "../api";
 import { SyncedTimeline, type SyncedTimelineHandle } from "../components/SyncedTimeline";
 import { SignalHealthPanel, type LegWindowStats } from "../components/SignalHealthPanel";
+import { RouteThumbnail } from "../components/RouteThumbnail";
 import { SafeRestartModal } from "../components/SafeRestartModal";
 
 interface Props {
@@ -246,6 +247,9 @@ export function TimelinePage({
           <section className="panel">
             <div className="panel-head">
               <div className="panel-title">
+                {data.live_group.legs[0] && (
+                  <RouteThumbnail leg={data.live_group.legs[0]} label={data.group.name} size="sm" />
+                )}
                 <span>{data.group.name}</span>
                 <span className="pill pill-idle">{data.direction_label}</span>
                 <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>{data.event_name}</span>

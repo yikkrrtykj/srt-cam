@@ -57,5 +57,7 @@
       "metrics_url": "http://127.0.0.1:19101/stats",
       "container": "srt-pass1"
     }
-  ]
+  ],
+  "previews": []
 }
+
