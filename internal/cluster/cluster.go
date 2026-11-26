@@ -218,6 +218,43 @@ func (m *Manager) QueryPeerLogs(ctx context.Context, nodeID, channelID string, s
 	return payload.Raw, nil
 }
 
+// QueryPeerThumbnail fetches a recent keyframe JPEG/PNG thumbnail from a remote peer VPS.
+// Returns (nil, "", nil) if the peer has no preview thumbnail available (HTTP 204).
+func (m *Manager) QueryPeerThumbnail(ctx context.Context, nodeID, channelID string) ([]byte, string, error) {
+	peer, ok := m.findPeer(nodeID)
+	if !ok {
+		return nil, "", fmt.Errorf("peer node %q not configured", nodeID)
+	}
+	q := url.Values{}
+	q.Set("channel_id", channelID)
+	endpoint := strings.TrimRight(peer.APIURL, "/") + "/api/peer/thumbnail?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+peer.APIToken)
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil, "", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("peer %s thumbnail HTTP %d", nodeID, resp.StatusCode)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(http.MaxBytesReader(nil, resp.Body, 2<<20)); err != nil {
+		return nil, "", err
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "image/jpeg"
+	}
+	return buf.Bytes(), ct, nil
+}
+
 func (m *Manager) findPeer(nodeID string) (config.PeerNodeConfig, bool) {
 	for _, p := range m.cfg.Peers {
 		if p.NodeID == nodeID {

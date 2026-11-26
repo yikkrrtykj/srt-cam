@@ -132,4 +132,26 @@ func TestAPIAuthOverviewRestartAndEventSheet(t *testing.T) {
 	if logResp.TotalLines != 3 || len(logResp.Lines) != 2 || logResp.Lines[0].Level != "connect" || logResp.Lines[1].Level != "error" {
 		t.Fatalf("unexpected logs response: %+v", logResp)
 	}
+
+	// Thumbnail returns 204 when not configured in production mode
+	reqThumbEmpty := httptest.NewRequest(http.MethodGet, "/api/v1/channels/vps-1/srt-cam1/thumbnail", nil)
+	reqThumbEmpty.AddCookie(cookie)
+	recThumbEmpty := httptest.NewRecorder()
+	handler.ServeHTTP(recThumbEmpty, reqThumbEmpty)
+	if recThumbEmpty.Code != http.StatusNoContent {
+		t.Fatalf("empty thumbnail = %d, want 204", recThumbEmpty.Code)
+	}
+
+	// Thumbnail returns 200 image/jpeg when ThumbnailFunc serves bytes
+	srv.SetThumbnailFunc(func(_ string) ([]byte, string, bool) {
+		return []byte{0xFF, 0xD8, 0xFF}, "image/jpeg", true
+	})
+	reqThumb := httptest.NewRequest(http.MethodGet, "/api/v1/channels/vps-1/srt-cam1/thumbnail", nil)
+	reqThumb.AddCookie(cookie)
+	recThumb := httptest.NewRecorder()
+	handler.ServeHTTP(recThumb, reqThumb)
+	if recThumb.Code != http.StatusOK || recThumb.Header().Get("Content-Type") != "image/jpeg" {
+		t.Fatalf("thumbnail = (%d, %q), want (200, image/jpeg)", recThumb.Code, recThumb.Header().Get("Content-Type"))
+	}
 }
+

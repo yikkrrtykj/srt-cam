@@ -22,6 +22,7 @@ import (
 	"github.com/yikkrrtykj/srt-cam/internal/diagnosis"
 	"github.com/yikkrrtykj/srt-cam/internal/model"
 	"github.com/yikkrrtykj/srt-cam/internal/notify"
+	"github.com/yikkrrtykj/srt-cam/internal/preview"
 	"github.com/yikkrrtykj/srt-cam/internal/storage"
 	"github.com/yikkrrtykj/srt-cam/internal/web"
 )
@@ -82,6 +83,7 @@ func main() {
 	clusterMgr := cluster.NewManager(cfg)
 	authMgr := auth.NewManager(cfg.Auth, cfg.ClusterToken)
 	alertMgr := notify.NewAlertManager(cfg.NodeID, cfg.IsPrimaryMonitor, cfg.Feishu, store, nil)
+	previewMgr := preview.NewManager(cfg.Previews)
 
 	srv := web.NewServer(
 		cfg,
@@ -94,9 +96,18 @@ func main() {
 		webassets.Dist,
 	)
 	srv.SetLogsFunc(col.ChannelLogs)
+	srv.SetThumbnailFunc(func(channelID string) ([]byte, string, bool) {
+		snap, ok := previewMgr.Snapshot(channelID, 30*time.Second)
+		if !ok {
+			return nil, "", false
+		}
+		return snap.Data, snap.ContentType, true
+	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	previewMgr.Start(ctx)
 
 	// Run initial sample immediately so first page load has complete live data
 	runCycle(ctx, cfg, evStore, col, clusterMgr, store, alertMgr, srv)

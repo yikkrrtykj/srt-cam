@@ -19,6 +19,7 @@ import (
 	"github.com/yikkrrtykj/srt-cam/internal/diagnosis"
 	"github.com/yikkrrtykj/srt-cam/internal/model"
 	"github.com/yikkrrtykj/srt-cam/internal/notify"
+	"github.com/yikkrrtykj/srt-cam/internal/preview"
 	"github.com/yikkrrtykj/srt-cam/internal/storage"
 )
 
@@ -60,6 +61,9 @@ type GroupTimelineResponse struct {
 // LogsFunc fetches recent raw logs for a single local channel container.
 type LogsFunc func(ctx context.Context, channelID string, sinceSec, tail int) (string, error)
 
+// ThumbnailFunc returns a recent thumbnail image (bytes, content-type, ok) for a local channel.
+type ThumbnailFunc func(channelID string) ([]byte, string, bool)
+
 // LogLine is one parsed log entry returned to the route detail Logs tab.
 type LogLine struct {
 	TS      string `json:"ts,omitempty"`
@@ -79,15 +83,16 @@ type ChannelLogsResponse struct {
 
 // Server serves authenticated dashboard REST/SSE APIs, peer cluster APIs, and the embedded SPA.
 type Server struct {
-	cfg        config.NodeConfig
-	events     *config.EventStore
-	store      *storage.Store
-	authMgr    *auth.Manager
-	clusterMgr *cluster.Manager
-	restartFn  RestartFunc
-	logsFn     LogsFunc
-	testFeishu func(ctx context.Context) error
-	staticFS   fs.FS
+	cfg         config.NodeConfig
+	events      *config.EventStore
+	store       *storage.Store
+	authMgr     *auth.Manager
+	clusterMgr  *cluster.Manager
+	restartFn   RestartFunc
+	logsFn      LogsFunc
+	thumbnailFn ThumbnailFunc
+	testFeishu  func(ctx context.Context) error
+	staticFS    fs.FS
 
 	mu       sync.RWMutex
 	local    model.NodeLiveStatus
@@ -124,6 +129,11 @@ func NewServer(
 // SetLogsFunc attaches the local container log fetcher used by the Logs tab and peer log proxy.
 func (s *Server) SetLogsFunc(fn LogsFunc) {
 	s.logsFn = fn
+}
+
+// SetThumbnailFunc attaches the local keyframe thumbnail fetcher used by UI cards and peer proxy.
+func (s *Server) SetThumbnailFunc(fn ThumbnailFunc) {
+	s.thumbnailFn = fn
 }
 
 // UpdateSnapshot stores the latest aggregated snapshot and notifies connected SSE browsers.
@@ -262,6 +272,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/signal-groups/{groupID}/expected-active", s.withAuth(s.handleToggleExpectedActive))
 	mux.HandleFunc("POST /api/v1/channels/{nodeID}/{channelID}/restart", s.withAuth(s.handleRestartChannel))
 	mux.HandleFunc("GET /api/v1/channels/{nodeID}/{channelID}/logs", s.withAuth(s.handleChannelLogs))
+	mux.HandleFunc("GET /api/v1/channels/{nodeID}/{channelID}/thumbnail", s.withAuth(s.handleChannelThumbnail))
 	mux.HandleFunc("GET /api/v1/audit", s.withAuth(s.handleAudit))
 	mux.HandleFunc("POST /api/v1/alerts/test", s.withAuth(s.handleTestAlert))
 
@@ -272,6 +283,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/peer/live", s.withClusterAuth(s.handlePeerLive))
 	mux.HandleFunc("GET /api/peer/timeline", s.withClusterAuth(s.handlePeerTimeline))
 	mux.HandleFunc("GET /api/peer/logs", s.withClusterAuth(s.handlePeerLogs))
+	mux.HandleFunc("GET /api/peer/thumbnail", s.withClusterAuth(s.handlePeerThumbnail))
 	mux.HandleFunc("POST /api/peer/restart", s.withClusterAuth(s.handlePeerRestart))
 
 	// Embedded SPA static frontend
@@ -744,6 +756,87 @@ func (s *Server) handlePeerLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"raw": raw})
+}
+
+func (s *Server) handleChannelThumbnail(w http.ResponseWriter, r *http.Request, _ string) {
+	nodeID := r.PathValue("nodeID")
+	channelID := r.PathValue("channelID")
+	label := r.URL.Query().Get("label")
+
+	if nodeID == s.cfg.NodeID {
+		if s.thumbnailFn != nil {
+			if data, ct, ok := s.thumbnailFn(channelID); ok && len(data) > 0 {
+				w.Header().Set("Content-Type", ct)
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(data)
+				return
+			}
+		}
+	} else if !s.cfg.DemoMode {
+		data, ct, err := s.clusterMgr.QueryPeerThumbnail(r.Context(), nodeID, channelID)
+		if err == nil && len(data) > 0 {
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+	}
+
+	if s.cfg.DemoMode {
+		sample, foundLabel := s.lookupLiveSample(nodeID, channelID)
+		if label == "" {
+			label = foundLabel
+		}
+		svg := preview.RenderDemoMonitorSVG(label, sample, time.Now())
+		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(svg)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePeerThumbnail(w http.ResponseWriter, r *http.Request) {
+	channelID := r.URL.Query().Get("channel_id")
+	if channelID == "" || s.thumbnailFn == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	data, ct, ok := s.thumbnailFn(channelID)
+	if !ok || len(data) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) lookupLiveSample(nodeID, channelID string) (model.ChannelSample, string) {
+	s.mu.RLock()
+	ov := s.overview
+	s.mu.RUnlock()
+	for _, g := range ov.Groups {
+		for _, leg := range g.Legs {
+			if leg.NodeID == nodeID && leg.ChannelID == channelID {
+				return leg.Sample, g.Name
+			}
+		}
+	}
+	for _, n := range ov.Nodes {
+		if n.NodeID == nodeID {
+			if cs, ok := n.Channels[channelID]; ok {
+				return cs, channelID
+			}
+		}
+	}
+	return model.ChannelSample{NodeID: nodeID, ChannelID: channelID}, channelID
 }
 
 func parseLogLines(raw string) []LogLine {

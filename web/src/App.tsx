@@ -292,6 +292,7 @@ export function App() {
           ) : tab === "overview" ? (
             <OverviewPage
               overview={overview}
+              theme={theme}
               onOpenRoute={(gid) => navigate("timeline", gid)}
               onRefresh={() => void loadOverview()}
             />
