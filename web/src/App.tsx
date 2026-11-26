@@ -8,6 +8,7 @@ import { EventSheetPage } from "./pages/EventSheetPage";
 import { NodesPage } from "./pages/NodesPage";
 
 type Tab = "overview" | "timeline" | "sheet" | "nodes";
+type Theme = "dark" | "light";
 
 function parseHash(): { tab: Tab; groupId: string } {
   const hash = window.location.hash.replace(/^#\/?/, "");
@@ -20,20 +21,82 @@ function parseHash(): { tab: Tab; groupId: string } {
   return { tab: "overview", groupId: "" };
 }
 
+function loadTheme(): Theme {
+  try {
+    const saved = localStorage.getItem("srt_cam_theme");
+    if (saved === "light" || saved === "dark") return saved;
+  } catch {
+    // ignore storage restriction
+  }
+  return "dark";
+}
+
+function NavIcon({ kind }: { kind: Tab }) {
+  const common = { width: 15, height: 15, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8 };
+  if (kind === "overview") {
+    return (
+      <svg {...common}>
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="14" y="14" width="7" height="7" rx="1" />
+      </svg>
+    );
+  }
+  if (kind === "timeline") {
+    return (
+      <svg {...common}>
+        <polyline points="3 17 9 11 13 15 21 7" />
+        <polyline points="15 7 21 7 21 13" />
+      </svg>
+    );
+  }
+  if (kind === "sheet") {
+    return (
+      <svg {...common}>
+        <line x1="8" y1="6" x2="21" y2="6" />
+        <line x1="8" y1="12" x2="21" y2="12" />
+        <line x1="8" y1="18" x2="21" y2="18" />
+        <circle cx="4" cy="6" r="1" />
+        <circle cx="4" cy="12" r="1" />
+        <circle cx="4" cy="18" r="1" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common}>
+      <rect x="2" y="4" width="20" height="6" rx="1" />
+      <rect x="2" y="14" width="20" height="6" rx="1" />
+      <circle cx="6" cy="7" r="1" />
+      <circle cx="6" cy="17" r="1" />
+    </svg>
+  );
+}
+
 export function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [sseLive, setSseLive] = useState(false);
   const [tab, setTab] = useState<Tab>(() => parseHash().tab);
   const [selectedGroupId, setSelectedGroupId] = useState<string>(() => parseHash().groupId);
-  const [screenshotMode, setScreenshotMode] = useState(false);
+  const [cleanView, setCleanView] = useState(false);
+  const [theme, setTheme] = useState<Theme>(() => loadTheme());
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem("srt_cam_theme", theme);
+    } catch {
+      // ignore
+    }
+  }, [theme]);
 
   const loadOverview = useCallback(async () => {
     try {
       const ov = await api.overview();
       setOverview(ov);
     } catch {
-      // handled by auth state or retry
+      // handled via SSE/auth
     }
   }, []);
 
@@ -59,7 +122,7 @@ export function App() {
         setOverview(parsed);
         setSseLive(true);
       } catch {
-        // ignore malformed frame
+        // ignore
       }
     });
     es.onerror = () => setSseLive(false);
@@ -70,7 +133,7 @@ export function App() {
   }, [auth?.authenticated, loadOverview]);
 
   function navigate(nextTab: Tab, groupId?: string) {
-    setScreenshotMode(false);
+    setCleanView(false);
     setTab(nextTab);
     if (nextTab === "timeline") {
       const gid = groupId ?? selectedGroupId;
@@ -89,8 +152,8 @@ export function App() {
 
   if (!auth) {
     return (
-      <main className="login-shell">
-        <div className="kpi-card">正在连接 SRT-CAM 控制台...</div>
+      <main className="login-wrap">
+        <div className="panel" style={{ padding: 16 }}>连接中...</div>
       </main>
     );
   }
@@ -104,88 +167,151 @@ export function App() {
     );
   }
 
-  const criticalCount =
-    overview?.groups.filter((g) => g.expected_active && g.severity === "CRITICAL_OUTAGE").length ?? 0;
+  const alertCount =
+    overview?.groups.filter(
+      (g) => g.expected_active && (g.severity === "CRITICAL_OUTAGE" || g.severity === "DEGRADED_PROTECTED")
+    ).length ?? 0;
+
+  const activeRoute = overview?.groups.find((g) => g.id === (selectedGroupId || overview?.groups[0]?.id));
 
   return (
-    <div className={`app-shell ${screenshotMode ? "evidence-fullscreen" : ""}`}>
-      {!screenshotMode && (
-        <aside className="sidebar" aria-label="主导航">
-          <div className="brand-block">
-            <div className="brand-title">SRT-CAM v2</div>
-            <div className="brand-sub">{auth.display_name || auth.node_id}</div>
+    <div className={`shell ${cleanView ? "clean-view" : ""}`}>
+      {!cleanView && (
+        <aside className="rail" aria-label="主导航">
+          <div className="rail-brand">
+            <span className="rail-logo">SRT</span>
+            <span className="rail-name">SRT-CAM</span>
           </div>
 
-          <nav className="nav-list">
+          <nav className="rail-nav">
             <button
               type="button"
-              className={`nav-btn ${tab === "overview" ? "active" : ""}`}
+              className={`rail-item ${tab === "overview" ? "active" : ""}`}
               onClick={() => navigate("overview")}
             >
-              <span>双向信号总览</span>
-              {criticalCount > 0 && <span className="badge badge-crit">{criticalCount}</span>}
+              <span className="rail-item-left">
+                <NavIcon kind="overview" />
+                <span>路由总览</span>
+              </span>
+              {alertCount > 0 && <span className="pill pill-warn">{alertCount}</span>}
             </button>
+
             <button
               type="button"
-              className={`nav-btn ${tab === "timeline" ? "active" : ""}`}
+              className={`rail-item ${tab === "timeline" ? "active" : ""}`}
               onClick={() => navigate("timeline")}
             >
-              <span>4 层同步时间轴</span>
+              <span className="rail-item-left">
+                <NavIcon kind="timeline" />
+                <span>链路详情</span>
+              </span>
             </button>
+
             <button
               type="button"
-              className={`nav-btn ${tab === "sheet" ? "active" : ""}`}
+              className={`rail-item ${tab === "sheet" ? "active" : ""}`}
               onClick={() => navigate("sheet")}
             >
-              <span>场次信号表</span>
+              <span className="rail-item-left">
+                <NavIcon kind="sheet" />
+                <span>路由配置</span>
+              </span>
             </button>
+
             <button
               type="button"
-              className={`nav-btn ${tab === "nodes" ? "active" : ""}`}
+              className={`rail-item ${tab === "nodes" ? "active" : ""}`}
               onClick={() => navigate("nodes")}
             >
-              <span>多 VPS 节点 & 审计</span>
+              <span className="rail-item-left">
+                <NavIcon kind="nodes" />
+                <span>节点与日志</span>
+              </span>
             </button>
           </nav>
 
-          <div className="sidebar-footer">
-            <div className="sse-indicator">
-              <span className={`dot ${sseLive ? "dot-ok" : "dot-warn"}`} />
-              <span>{sseLive ? "实时推送已连接" : "正在重连推送..."}</span>
-            </div>
-            <div>当前用户：{auth.username}</div>
-            {auth.auth_enabled && (
-              <button type="button" className="btn btn-sm btn-ghost-dark" onClick={handleLogout}>
-                退出登录
-              </button>
-            )}
+          <div className="rail-footer">
+            <div className="mono" style={{ fontSize: 11 }}>{auth.node_id}</div>
+            <div>{auth.username}</div>
           </div>
         </aside>
       )}
 
-      <main className="main-area">
-        {!overview ? (
-          <div className="kpi-card">正在拉取节点实时数据...</div>
-        ) : tab === "overview" ? (
-          <OverviewPage
-            overview={overview}
-            onOpenTimeline={(gid) => navigate("timeline", gid)}
-            onRefresh={() => void loadOverview()}
-          />
-        ) : tab === "timeline" ? (
-          <TimelinePage
-            groups={overview.groups}
-            selectedGroupId={selectedGroupId}
-            onSelectGroup={(gid) => navigate("timeline", gid)}
-            screenshotMode={screenshotMode}
-            onToggleScreenshotMode={setScreenshotMode}
-          />
-        ) : tab === "sheet" ? (
-          <EventSheetPage onSaved={() => void loadOverview()} />
-        ) : (
-          <NodesPage nodes={overview.nodes} />
+      <div className="workspace">
+        {!cleanView && (
+          <header className="topbar">
+            <div className="breadcrumb">
+              <button type="button" className="breadcrumb-link" onClick={() => navigate("overview")}>
+                SRT Gateway
+              </button>
+              <span>/</span>
+              {tab === "overview" && <span className="breadcrumb-current">路由总览</span>}
+              {tab === "timeline" && (
+                <>
+                  <button type="button" className="breadcrumb-link" onClick={() => navigate("overview")}>
+                    路由总览
+                  </button>
+                  <span>/</span>
+                  <span className="breadcrumb-current">{activeRoute?.name || "链路详情"}</span>
+                </>
+              )}
+              {tab === "sheet" && <span className="breadcrumb-current">路由配置</span>}
+              {tab === "nodes" && <span className="breadcrumb-current">节点与日志</span>}
+              {overview?.event_name && (
+                <span className="pill pill-idle" style={{ marginLeft: 6 }}>
+                  {overview.event_name}
+                </span>
+              )}
+              {overview?.demo_mode && <span className="pill pill-accent">DEMO</span>}
+            </div>
+
+            <div className="topbar-right">
+              <span className={`pill ${sseLive ? "pill-ok" : "pill-warn"}`}>
+                <span className={`dot ${sseLive ? "dot-ok" : "dot-warn"}`} />
+                {sseLive ? "LIVE" : "RECONNECT"}
+              </span>
+              <button
+                type="button"
+                className="btn btn-xs"
+                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              >
+                {theme === "dark" ? "浅色" : "深色 MCR"}
+              </button>
+              {auth.auth_enabled && (
+                <button type="button" className="btn btn-xs" onClick={handleLogout}>
+                  退出
+                </button>
+              )}
+            </div>
+          </header>
         )}
-      </main>
+
+        <main className="content">
+          {!overview ? (
+            <div className="panel" style={{ padding: 16 }}>正在同步节点状态...</div>
+          ) : tab === "overview" ? (
+            <OverviewPage
+              overview={overview}
+              onOpenRoute={(gid) => navigate("timeline", gid)}
+              onRefresh={() => void loadOverview()}
+            />
+          ) : tab === "timeline" ? (
+            <TimelinePage
+              groups={overview.groups}
+              selectedGroupId={selectedGroupId}
+              onSelectGroup={(gid) => navigate("timeline", gid)}
+              onBack={() => navigate("overview")}
+              cleanView={cleanView}
+              onToggleCleanView={setCleanView}
+              theme={theme}
+            />
+          ) : tab === "sheet" ? (
+            <EventSheetPage onSaved={() => void loadOverview()} />
+          ) : (
+            <NodesPage nodes={overview.nodes} />
+          )}
+        </main>
+      </div>
     </div>
   );
 }

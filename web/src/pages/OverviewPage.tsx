@@ -1,13 +1,15 @@
-import { useState } from "react";
-import type { OverviewResponse, SignalGroupLiveView } from "../types";
-import { api, formatTime, formatUptime, redundancyText, severityText } from "../api";
+import { useMemo, useState } from "react";
+import type { LegLiveView, OverviewResponse, SignalGroupLiveView } from "../types";
+import { api, formatTime, redundancyText, severityText } from "../api";
 import { SafeRestartModal } from "../components/SafeRestartModal";
 
 interface Props {
   overview: OverviewResponse;
-  onOpenTimeline: (groupId: string) => void;
+  onOpenRoute: (groupId: string) => void;
   onRefresh: () => void;
 }
+
+type FilterTab = "all" | "venue_to_hub" | "hub_to_venue" | "attention";
 
 interface RestartTarget {
   nodeId: string;
@@ -16,37 +18,107 @@ interface RestartTarget {
   signalName: string;
 }
 
-export function OverviewPage({ overview, onOpenTimeline, onRefresh }: Props) {
+function legDotClass(leg: LegLiveView): string {
+  if (!leg.node_online) return "dot-crit";
+  switch (leg.sample.fault_code) {
+    case "HEALTHY":
+      return "dot-ok";
+    case "IDLE_EXPECTED_OFF":
+      return "dot-idle";
+    case "UPSTREAM_OFFLINE":
+    case "DOWNSTREAM_OFFLINE":
+    case "CLOUD_PROCESS_DOWN":
+    case "NODE_UNREACHABLE":
+      return "dot-crit";
+    default:
+      return "dot-warn";
+  }
+}
+
+export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
+  const [filter, setFilter] = useState<FilterTab>("all");
+  const [query, setQuery] = useState("");
   const [restartTarget, setRestartTarget] = useState<RestartTarget | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [testingFeishu, setTestingFeishu] = useState(false);
 
-  const venueToHub = overview.groups.filter((g) => g.direction === "venue_to_hub");
-  const hubToVenue = overview.groups.filter((g) => g.direction === "hub_to_venue");
-
   const activeGroups = overview.groups.filter((g) => g.expected_active);
-  const protectedCount = activeGroups.filter((g) => g.severity === "DEGRADED_PROTECTED").length;
-  const criticalCount = activeGroups.filter((g) => g.severity === "CRITICAL_OUTAGE").length;
+  const healthyCount = activeGroups.filter((g) => g.severity === "HEALTHY").length;
+  const backupCount = activeGroups.filter((g) => g.severity === "DEGRADED_PROTECTED").length;
+  const degradedCount = activeGroups.filter((g) => g.severity === "DEGRADED_SINGLE").length;
+  const offlineCount = activeGroups.filter((g) => g.severity === "CRITICAL_OUTAGE").length;
   const onlineNodes = overview.nodes.filter((n) => n.online).length;
+
+  const totalInMbps = overview.groups.reduce(
+    (sum, g) => sum + g.legs.reduce((s, l) => s + l.sample.src_mbps, 0),
+    0
+  );
+  const totalOutMbps = overview.groups.reduce(
+    (sum, g) => sum + g.legs.reduce((s, l) => s + l.sample.dst_mbps, 0),
+    0
+  );
+  const totalUDPDrops = overview.nodes.reduce((sum, n) => sum + n.host.udp_rcvbuf_errors, 0);
+  const avgCPU =
+    overview.nodes.length > 0
+      ? overview.nodes.reduce((sum, n) => sum + n.host.cpu_percent, 0) / overview.nodes.length
+      : 0;
+
+  // HydraSRT-style Attention List: only routes requiring operator attention
+  const attentionRoutes = useMemo(
+    () =>
+      overview.groups.filter(
+        (g) =>
+          g.expected_active &&
+          (g.severity === "CRITICAL_OUTAGE" ||
+            g.severity === "DEGRADED_PROTECTED" ||
+            g.severity === "DEGRADED_SINGLE")
+      ),
+    [overview.groups]
+  );
+
+  const filteredGroups = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return overview.groups.filter((g) => {
+      if (filter === "venue_to_hub" && g.direction !== "venue_to_hub") return false;
+      if (filter === "hub_to_venue" && g.direction !== "hub_to_venue") return false;
+      if (
+        filter === "attention" &&
+        !(
+          g.expected_active &&
+          (g.severity === "CRITICAL_OUTAGE" ||
+            g.severity === "DEGRADED_PROTECTED" ||
+            g.severity === "DEGRADED_SINGLE")
+        )
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      const hay = [
+        g.name,
+        g.notes ?? "",
+        ...g.legs.flatMap((l) => [l.node_id, l.channel_id, l.carrier, l.src_device, l.dst_device]),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [overview.groups, filter, query]);
 
   async function handleToggleActive(grp: SignalGroupLiveView) {
     try {
       await api.toggleExpectedActive(grp.id, !grp.expected_active);
-      setToast({
-        kind: "ok",
-        text: `已将 ${grp.name} 设为「${!grp.expected_active ? "本场开播（开启告警）" : "待机（静默）"}」`,
-      });
       onRefresh();
     } catch (err) {
-      setToast({ kind: "err", text: err instanceof Error ? err.message : "切换失败" });
+      setToast({ kind: "err", text: err instanceof Error ? err.message : "操作失败" });
     }
   }
 
   async function handleTestFeishu() {
     setTestingFeishu(true);
+    setToast(null);
     try {
       await api.testFeishu();
-      setToast({ kind: "ok", text: "已向飞书群发送连通测试卡片，请查看飞书消息。" });
+      setToast({ kind: "ok", text: "飞书测试消息已发送" });
     } catch (err) {
       setToast({ kind: "err", text: err instanceof Error ? err.message : "发送失败" });
     } finally {
@@ -54,284 +126,360 @@ export function OverviewPage({ overview, onOpenTimeline, onRefresh }: Props) {
     }
   }
 
-  function renderGroupCard(grp: SignalGroupLiveView) {
-    const sev = severityText(grp.severity);
-    return (
-      <article key={grp.id} className="signal-card">
-        <div className="signal-card-top">
-          <div className="signal-identity">
-            <span className="signal-name">{grp.name}</span>
-            <span className={`badge ${sev.cls}`}>{sev.label}</span>
-            <span className="badge badge-brand">{redundancyText(grp.redundancy_type)}</span>
-            {grp.notes && (
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{grp.notes}</span>
-            )}
+  const venueName = overview.sites.venue || "现场";
+  const hubName = overview.sites.hub || "制作中心";
+
+  return (
+    <div>
+      {toast && (
+        <div className={`notice ${toast.kind === "ok" ? "notice-ok" : "notice-err"}`}>{toast.text}</div>
+      )}
+
+      {/* Top Operations Summary Strip (HydraSRT Dashboard pattern) */}
+      <section className="metrics-row" aria-label="系统指标">
+        <div className="metric-tile">
+          <div className="metric-head">
+            <span>路由状态</span>
+            <span className="mono">{activeGroups.length}/{overview.groups.length} 监控</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <label className="toggle-label" title="勾选后，该信号中断将触发自动故障定界与飞书告警">
-              <input
-                type="checkbox"
-                checked={grp.expected_active}
-                onChange={() => handleToggleActive(grp)}
-              />
-              本场开播
-            </label>
+          <div className="metric-val mono">
+            <span style={{ color: "var(--ok)" }}>{healthyCount}</span>
+            <span style={{ color: "var(--text-muted)", fontSize: 15 }}> / {activeGroups.length}</span>
+          </div>
+          <div className="metric-sub mono">
+            <span>正常 {healthyCount}</span>
+            <span style={{ color: backupCount + degradedCount > 0 ? "var(--warn)" : undefined }}>
+              备路/抖动 {backupCount + degradedCount}
+            </span>
+            <span style={{ color: offlineCount > 0 ? "var(--crit)" : undefined }}>
+              中断 {offlineCount}
+            </span>
+          </div>
+        </div>
+
+        <div className="metric-tile">
+          <div className="metric-head">
+            <span>主备冗余</span>
+            <span>Failover</span>
+          </div>
+          <div
+            className="metric-val"
+            style={{
+              color:
+                offlineCount > 0
+                  ? "var(--crit)"
+                  : backupCount > 0
+                  ? "var(--warn)"
+                  : "var(--ok)",
+            }}
+          >
+            {offlineCount > 0
+              ? `${offlineCount} 路中断`
+              : backupCount > 0
+              ? `${backupCount} 路备路在播`
+              : "全部主备就绪"}
+          </div>
+          <div className="metric-sub">
+            <span>备路接管 {backupCount}</span>
+            <span>抖动 {degradedCount}</span>
+          </div>
+        </div>
+
+        <div className="metric-tile">
+          <div className="metric-head">
+            <span>汇总流量</span>
+            <span className="mono">SRT + UDP</span>
+          </div>
+          <div className="metric-val mono">{totalInMbps.toFixed(1)} Mb/s</div>
+          <div className="metric-sub mono">
+            <span>入 {totalInMbps.toFixed(1)} Mb/s</span>
+            <span>出 {totalOutMbps.toFixed(1)} Mb/s</span>
+          </div>
+        </div>
+
+        <div className="metric-tile">
+          <div className="metric-head">
+            <span>中转节点</span>
+            <span className="mono">{formatTime(overview.updated_at)}</span>
+          </div>
+          <div className="metric-val mono">
+            {onlineNodes} / {overview.nodes.length}
+            <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)", marginLeft: 8 }}>
+              在线
+            </span>
+          </div>
+          <div className="metric-sub mono">
+            <span>均载 CPU {avgCPU.toFixed(1)}%</span>
+            <span style={{ color: totalUDPDrops > 0 ? "var(--crit)" : "var(--ok)" }}>
+              UDP 丢包 {totalUDPDrops}
+            </span>
+          </div>
+        </div>
+      </section>
+
+      {/* Attention List (HydraSRT signature operations panel) */}
+      {attentionRoutes.length > 0 && (
+        <section className={`panel attention-panel ${offlineCount > 0 ? "has-crit" : ""}`}>
+          <div className="panel-head">
+            <span className="panel-title">
+              <span className={`dot ${offlineCount > 0 ? "dot-crit" : "dot-warn"}`} />
+              需关注路由 ({attentionRoutes.length})
+            </span>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="gw-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 92 }}>状态</th>
+                  <th style={{ width: 130 }}>路由</th>
+                  <th style={{ width: 160 }}>方向</th>
+                  <th>当前状态摘要</th>
+                  <th style={{ width: 80, textAlign: "right" }}>查看</th>
+                </tr>
+              </thead>
+              <tbody>
+                {attentionRoutes.map((grp) => {
+                  const sev = severityText(grp.severity);
+                  return (
+                    <tr key={grp.id} className="clickable">
+                      <td>
+                        <span className={`pill ${sev.cls}`}>{sev.label}</span>
+                      </td>
+                      <td>
+                        <button type="button" className="route-link" onClick={() => onOpenRoute(grp.id)}>
+                          {grp.name}
+                        </button>
+                      </td>
+                      <td style={{ color: "var(--text-secondary)" }}>{grp.direction_label}</td>
+                      <td>{grp.summary}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button type="button" className="btn btn-xs btn-primary" onClick={() => onOpenRoute(grp.id)}>
+                          详情
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* Main Routes Table (Haivision SRT Gateway + HydraSRT style) */}
+      <section className="panel">
+        <div className="panel-head">
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+            <div className="seg-group" role="tablist" aria-label="方向筛选">
+              <button
+                type="button"
+                className={`seg-btn ${filter === "all" ? "active" : ""}`}
+                onClick={() => setFilter("all")}
+              >
+                全部 ({overview.groups.length})
+              </button>
+              <button
+                type="button"
+                className={`seg-btn ${filter === "venue_to_hub" ? "active" : ""}`}
+                onClick={() => setFilter("venue_to_hub")}
+              >
+                {venueName} → {hubName}
+              </button>
+              <button
+                type="button"
+                className={`seg-btn ${filter === "hub_to_venue" ? "active" : ""}`}
+                onClick={() => setFilter("hub_to_venue")}
+              >
+                {hubName} → {venueName}
+              </button>
+              <button
+                type="button"
+                className={`seg-btn ${filter === "attention" ? "active" : ""}`}
+                onClick={() => setFilter("attention")}
+              >
+                仅异常 ({attentionRoutes.length})
+              </button>
+            </div>
+            <input
+              className="input"
+              style={{ width: 200 }}
+              placeholder="搜索信号 / 设备 / 节点 / 运营商"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button
               type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => onOpenTimeline(grp.id)}
+              className="btn"
+              onClick={handleTestFeishu}
+              disabled={testingFeishu}
             >
-              4 层同步时间轴 / 留证
+              {testingFeishu ? "发送中..." : "测试飞书"}
+            </button>
+            <button type="button" className="btn" onClick={onRefresh}>
+              刷新
             </button>
           </div>
         </div>
 
-        <div className={`signal-summary-bar sev-${grp.severity}`}>
-          <span>
-            <strong>自动定界：</strong>
-            {grp.summary}
-          </span>
-          {grp.protected_by && (
-            <span className="badge badge-ok">兜底：{grp.protected_by}</span>
-          )}
-        </div>
-
         <div style={{ overflowX: "auto" }}>
-          <table className="data-table">
+          <table className="gw-table">
             <thead>
               <tr>
-                <th>角色 / 运营商</th>
-                <th>云端节点 & 通道</th>
-                <th>模式</th>
-                <th>发端 → 收端设备</th>
-                <th>入 / 出码率</th>
-                <th>上游 / 下游 RTT</th>
-                <th>丢包 · 重传 · NAK</th>
-                <th>路径 / 云端状态</th>
-                <th style={{ textAlign: "right" }}>操作</th>
+                <th style={{ width: 92 }}>状态</th>
+                <th style={{ width: 170 }}>路由 / 模式</th>
+                <th>传输路径（Source → Gateway → Destination）</th>
+                <th style={{ width: 120 }}>码率 (Mb/s)</th>
+                <th style={{ width: 160 }}>RTT / 丢包</th>
+                <th style={{ width: 72 }}>告警</th>
+                <th style={{ width: 118, textAlign: "right" }}>操作</th>
               </tr>
             </thead>
             <tbody>
-              {grp.legs.map((leg) => {
-                const s = leg.sample;
-                const roleLabel =
-                  leg.role === "primary" ? "主路" : leg.role === "backup" ? "备路" : "单路";
-                const legBad =
-                  !leg.node_online ||
-                  (s.fault_code !== "HEALTHY" &&
-                    s.fault_code !== "IDLE_EXPECTED_OFF" &&
-                    s.fault_code !== "TUNNEL_LO_WARNING");
-                return (
-                  <tr key={`${leg.node_id}-${leg.channel_id}`}>
-                    <td>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span
-                          className={`dot ${
-                            !leg.node_online || s.fault_code === "UPSTREAM_OFFLINE" || s.fault_code === "CLOUD_PROCESS_DOWN"
-                              ? "dot-crit"
-                              : legBad
-                              ? "dot-warn"
-                              : s.fault_code === "IDLE_EXPECTED_OFF"
-                              ? "dot-idle"
-                              : "dot-ok"
-                          }`}
-                        />
-                        <strong>{roleLabel}</strong>
-                        {leg.carrier && <span className="badge badge-idle">{leg.carrier}</span>}
-                      </div>
-                    </td>
-                    <td className="mono" style={{ fontSize: 12 }}>
-                      <div>
-                        <strong>{leg.node_id}</strong> / {leg.channel_id}
-                      </div>
-                      <div style={{ color: "var(--text-muted)", fontSize: 11 }}>
-                        {leg.mode === "udp-passthrough"
-                          ? `UDP :${leg.in_port} → ${leg.target_addr || ":" + leg.out_port}`
-                          : `入 :${leg.in_port} / 出 :${leg.out_port}`}
-                      </div>
-                    </td>
-                    <td>
-                      <span className={`badge ${leg.mode === "udp-passthrough" ? "badge-brand" : "badge-idle"}`}>
-                        {leg.mode === "udp-passthrough" ? "Mode B 透传" : "Mode A 中转"}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="device-stack">
-                        <span>发：{leg.src_device || "-"}</span>
-                        <span className="device-arrow">收：{leg.dst_device || "-"}</span>
-                      </div>
-                    </td>
-                    <td className="mono">
-                      <div>入 {s.src_mbps.toFixed(2)} Mb/s</div>
-                      <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-                        出 {s.dst_mbps.toFixed(2)} Mb/s
-                      </div>
-                    </td>
-                    <td className="mono">
-                      {leg.mode === "udp-passthrough" ? (
-                        <span style={{ color: "var(--text-muted)", fontSize: 12 }}>端到端透传</span>
-                      ) : (
-                        <>
-                          <div>上 {s.src_rtt_ms > 0 ? `${s.src_rtt_ms.toFixed(0)}ms` : "-"}</div>
-                          <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-                            下 {s.dst_rtt_ms > 0 ? `${s.dst_rtt_ms.toFixed(0)}ms` : "-"}
-                          </div>
-                        </>
-                      )}
-                    </td>
-                    <td className="mono" style={{ fontSize: 12 }}>
-                      {leg.mode === "udp-passthrough" ? (
-                        <div>
-                          重传 {s.src_retrans} · NAK {s.dst_nak_count}
-                        </div>
-                      ) : (
-                        <>
-                          <div>
-                            上 丢{s.src_lost}/重{s.src_retrans}/弃{s.src_dropped}
-                          </div>
-                          <div style={{ color: "var(--text-secondary)" }}>
-                            下 丢{s.dst_lost}/重{s.dst_retrans}/弃{s.dst_dropped}
-                          </div>
-                        </>
-                      )}
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12 }}>
-                        <div>
-                          <span
-                            className={`badge ${
-                              s.path_medium.includes("LO") ? "badge-warn" : "badge-idle"
-                            }`}
-                          >
-                            {s.path_medium || "-"}
-                          </span>{" "}
-                          <span className="mono" style={{ color: "var(--text-secondary)" }}>
-                            {s.process_state}
-                          </span>
-                        </div>
-                        <span style={{ color: "var(--text-muted)", fontSize: 11 }}>
-                          重启 {s.restart_count} 次 · 运行 {formatUptime(s.uptime_sec)}
+              {filteredGroups.length === 0 ? (
+                <tr>
+                  <td colSpan={7} style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>
+                    无匹配路由
+                  </td>
+                </tr>
+              ) : (
+                filteredGroups.map((grp) => {
+                  const sev = severityText(grp.severity);
+                  return (
+                    <tr key={grp.id} className="clickable">
+                      <td>
+                        <span className={`pill ${sev.cls}`}>
+                          <span className={`dot ${sev.dot}`} />
+                          {sev.label}
                         </span>
-                      </div>
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() =>
-                          setRestartTarget({
-                            nodeId: leg.node_id,
-                            nodeName: leg.node_name,
-                            channelId: leg.channel_id,
-                            signalName: grp.name,
-                          })
-                        }
-                      >
-                        单路重启
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+                      </td>
+
+                      <td>
+                        <button type="button" className="route-link" onClick={() => onOpenRoute(grp.id)}>
+                          {grp.name}
+                        </button>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                          {grp.direction_label} · {redundancyText(grp.redundancy_type)}
+                        </div>
+                      </td>
+
+                      <td>
+                        <div className="leg-flow-list">
+                          {grp.legs.map((leg) => {
+                            const roleTag =
+                              leg.role === "primary" ? "主" : leg.role === "backup" ? "备" : "单";
+                            return (
+                              <div key={`${leg.node_id}-${leg.channel_id}`} className="leg-flow-row">
+                                <span className={`dot ${legDotClass(leg)}`} />
+                                <span className="pill pill-idle" style={{ padding: "0 5px", fontSize: 10 }}>
+                                  {roleTag}
+                                  {leg.carrier ? `·${leg.carrier}` : ""}
+                                </span>
+                                <span className="flow-hop">{leg.src_device || "Source"}</span>
+                                <span className="flow-sep">→</span>
+                                <span className="flow-node mono">
+                                  {leg.node_id}:{leg.in_port}
+                                  {leg.mode === "udp-passthrough" ? " UDP" : `/${leg.out_port}`}
+                                </span>
+                                <span className="flow-sep">→</span>
+                                <span className="flow-hop">{leg.dst_device || "Destination"}</span>
+                                {leg.sample.path_medium.includes("LO") && (
+                                  <span className="pill pill-warn" style={{ padding: "0 5px", fontSize: 10 }}>
+                                    LO
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </td>
+
+                      <td className="mono">
+                        <div className="leg-flow-list">
+                          {grp.legs.map((leg) => (
+                            <div key={`${leg.node_id}-${leg.channel_id}`}>
+                              {leg.sample.src_mbps.toFixed(1)}
+                              <span style={{ color: "var(--text-muted)" }}> / </span>
+                              {leg.sample.dst_mbps.toFixed(1)}
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+
+                      <td className="mono">
+                        <div className="leg-flow-list">
+                          {grp.legs.map((leg) => {
+                            const s = leg.sample;
+                            if (leg.mode === "udp-passthrough") {
+                              return (
+                                <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 11 }}>
+                                  <span style={{ color: "var(--text-muted)" }}>Pass</span> · 重传 {s.src_retrans} · NAK{" "}
+                                  {s.dst_nak_count}
+                                </div>
+                              );
+                            }
+                            return (
+                              <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 11 }}>
+                                {s.src_rtt_ms > 0 ? `${s.src_rtt_ms.toFixed(0)}` : "-"}/
+                                {s.dst_rtt_ms > 0 ? `${s.dst_rtt_ms.toFixed(0)}ms` : "-"}
+                                <span style={{ color: "var(--text-muted)" }}> · </span>
+                                <span
+                                  style={{
+                                    color: s.src_dropped + s.dst_dropped > 0 ? "var(--crit)" : "var(--text-secondary)",
+                                  }}
+                                >
+                                  弃 {s.src_dropped}/{s.dst_dropped}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </td>
+
+                      <td>
+                        <label className="switch" title="开启后异常触发飞书告警">
+                          <input
+                            type="checkbox"
+                            checked={grp.expected_active}
+                            onChange={() => handleToggleActive(grp)}
+                          />
+                        </label>
+                      </td>
+
+                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                        <button
+                          type="button"
+                          className="btn btn-xs btn-primary"
+                          onClick={() => onOpenRoute(grp.id)}
+                        >
+                          详情
+                        </button>{" "}
+                        {grp.legs[0] && (
+                          <button
+                            type="button"
+                            className="btn btn-xs"
+                            title={`重启 ${grp.legs[0].node_id}/${grp.legs[0].channel_id}`}
+                            onClick={() =>
+                              setRestartTarget({
+                                nodeId: grp.legs[0].node_id,
+                                nodeName: grp.legs[0].node_name,
+                                channelId: grp.legs[0].channel_id,
+                                signalName: grp.name,
+                              })
+                            }
+                          >
+                            重启
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
-        </div>
-      </article>
-    );
-  }
-
-  return (
-    <div>
-      <header className="page-header">
-        <div>
-          <h1>{overview.event_name || "双向 SRT 信号总览"}</h1>
-          <p className="page-subtitle">
-            {overview.sites.venue || "现场"} ↔ {overview.sites.hub || "远程制作中心"} · 最近采样{" "}
-            <span className="mono">{formatTime(overview.updated_at)}</span>
-            {overview.demo_mode && " · 当前为离线演示模式（模拟 3 VPS 双向与电信/联通主备切换）"}
-          </p>
-        </div>
-        <div className="header-actions">
-          <button
-            type="button"
-            className="btn"
-            onClick={handleTestFeishu}
-            disabled={testingFeishu}
-          >
-            {testingFeishu ? "发送中..." : "测试飞书告警"}
-          </button>
-          <button type="button" className="btn" onClick={onRefresh}>
-            立即刷新
-          </button>
-        </div>
-      </header>
-
-      {toast && (
-        <div className={`notice-bar ${toast.kind === "ok" ? "notice-ok" : "notice-err"}`}>
-          {toast.text}
-        </div>
-      )}
-
-      <section className="kpi-grid" aria-label="关键运行指标">
-        <div className="kpi-card">
-          <div className="kpi-label">本场开播信号组</div>
-          <div className="kpi-value">{activeGroups.length} / {overview.groups.length}</div>
-          <div className="kpi-hint">仅勾选“本场开播”的信号触发飞书告警</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">单路异常 · 备路兜底中</div>
-          <div className="kpi-value" style={{ color: protectedCount > 0 ? "var(--warn)" : "var(--ok)" }}>
-            {protectedCount}
-          </div>
-          <div className="kpi-hint">主备冗余生效，直播画面未中断</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">紧急断播 / 双路全断</div>
-          <div className="kpi-value" style={{ color: criticalCount > 0 ? "var(--crit)" : "var(--ok)" }}>
-            {criticalCount}
-          </div>
-          <div className="kpi-hint">点击对应信号可立即进入 4 层时间轴定责</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">云端中转节点在线</div>
-          <div className="kpi-value">{onlineNodes} / {overview.nodes.length}</div>
-          <div className="kpi-hint">支持任意 N 台 VPS 聚合观测与各自独立兜底告警</div>
-        </div>
-      </section>
-
-      <section className="dir-section">
-        <div className="dir-header">
-          <h2 className="dir-title">
-            <span>{overview.sites.venue || "现场"} → {overview.sites.hub || "远程制作中心"}</span>
-            <span className="badge badge-idle">{venueToHub.length} 组信号</span>
-          </h2>
-        </div>
-        <div className="group-list">
-          {venueToHub.length === 0 ? (
-            <div className="kpi-card" style={{ color: "var(--text-muted)" }}>
-              暂无该方向的信号配置，可在「场次信号表」中添加。
-            </div>
-          ) : (
-            venueToHub.map(renderGroupCard)
-          )}
-        </div>
-      </section>
-
-      <section className="dir-section">
-        <div className="dir-header">
-          <h2 className="dir-title">
-            <span>{overview.sites.hub || "远程制作中心"} → {overview.sites.venue || "现场"}</span>
-            <span className="badge badge-idle">{hubToVenue.length} 组信号</span>
-          </h2>
-        </div>
-        <div className="group-list">
-          {hubToVenue.length === 0 ? (
-            <div className="kpi-card" style={{ color: "var(--text-muted)" }}>
-              暂无返送方向的信号配置，可在「场次信号表」中添加。
-            </div>
-          ) : (
-            hubToVenue.map(renderGroupCard)
-          )}
         </div>
       </section>
 

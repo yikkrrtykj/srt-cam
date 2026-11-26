@@ -31,7 +31,7 @@ export function EventSheetPage({ onSaved }: Props) {
       const saved = await api.saveEventSheet(payload);
       setSheet(saved);
       setRawJSON(JSON.stringify(saved, null, 2));
-      setMsg({ kind: "ok", text: "场次信号表已保存并即时生效（已记录审计日志）。" });
+      setMsg({ kind: "ok", text: "配置已保存" });
       onSaved();
     } catch (err) {
       setMsg({ kind: "err", text: err instanceof Error ? err.message : "保存失败" });
@@ -73,8 +73,8 @@ export function EventSheetPage({ onSaved }: Props) {
     if (!sheet) return;
     const n = sheet.signal_groups.length + 1;
     const created: SignalGroupConfig = {
-      id: `sig-${n}`,
-      name: `新信号-${n}`,
+      id: `route-${n}`,
+      name: `CAM${n}`,
       direction: "venue_to_hub",
       redundancy_type: "single",
       expected_active: false,
@@ -131,37 +131,35 @@ export function EventSheetPage({ onSaved }: Props) {
   }
 
   if (!sheet) {
-    return <div className="kpi-card">正在加载场次信号表...</div>;
+    return <div className="panel" style={{ padding: 16 }}>加载中...</div>;
   }
 
   return (
     <div>
-      <header className="page-header">
-        <div>
-          <h1>场次信号表管理（双向映射 & 主备配对）</h1>
-          <p className="page-subtitle">
-            对应现场 Excel 信号表：维护每路信号的双向方向、发/收设备、电信/联通运营商及主备绑定，换新项目支持一键导出/导入 JSON
-          </p>
+      <div className="toolbar-row">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <strong style={{ fontSize: 14 }}>路由表配置</strong>
+          <span className="pill pill-idle">{sheet.signal_groups.length} 组</span>
         </div>
-        <div className="header-actions">
+        <div style={{ display: "flex", gap: 8 }}>
           <button type="button" className="btn" onClick={() => setJsonMode(!jsonMode)}>
-            {jsonMode ? "切回可视化编辑" : "JSON 源码导入/编辑"}
+            {jsonMode ? "表单视图" : "JSON 编辑"}
           </button>
           <button type="button" className="btn" onClick={handleExportJSON}>
-            导出 JSON 备份
+            导出 JSON
           </button>
           <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? "保存中..." : "保存并生效"}
+            {saving ? "保存中..." : "保存"}
           </button>
         </div>
-      </header>
+      </div>
 
       {msg && (
-        <div className={`notice-bar ${msg.kind === "ok" ? "notice-ok" : "notice-err"}`}>{msg.text}</div>
+        <div className={`notice ${msg.kind === "ok" ? "notice-ok" : "notice-err"}`}>{msg.text}</div>
       )}
 
       {jsonMode ? (
-        <div className="signal-card" style={{ padding: 16 }}>
+        <div className="panel" style={{ padding: 14 }}>
           <textarea
             className="textarea mono"
             style={{ width: "100%", minHeight: 520 }}
@@ -171,10 +169,10 @@ export function EventSheetPage({ onSaved }: Props) {
         </div>
       ) : (
         <>
-          <div className="signal-card" style={{ padding: 16, marginBottom: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-              <div className="form-field" style={{ marginBottom: 0 }}>
-                <label>当前场次名称</label>
+          <div className="panel" style={{ padding: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>场次名称</label>
                 <input
                   className="input"
                   value={sheet.event_name}
@@ -185,8 +183,8 @@ export function EventSheetPage({ onSaved }: Props) {
                   }}
                 />
               </div>
-              <div className="form-field" style={{ marginBottom: 0 }}>
-                <label>现场端名称（如：印尼现场 / 埃及现场）</label>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>现场端名称</label>
                 <input
                   className="input"
                   value={sheet.sites.venue}
@@ -197,8 +195,8 @@ export function EventSheetPage({ onSaved }: Props) {
                   }}
                 />
               </div>
-              <div className="form-field" style={{ marginBottom: 0 }}>
-                <label>远程制作中心名称（如：上海制作中心）</label>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>制作中心名称</label>
                 <input
                   className="input"
                   value={sheet.sites.hub}
@@ -212,16 +210,16 @@ export function EventSheetPage({ onSaved }: Props) {
             </div>
           </div>
 
-          <div className="group-list">
-            {sheet.signal_groups.map((grp, gIdx) => (
-              <div key={grp.id + gIdx} className="signal-card" style={{ padding: 14 }}>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 10 }}>
+          {sheet.signal_groups.map((grp, gIdx) => (
+            <div key={grp.id + gIdx} className="panel">
+              <div className="panel-head">
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
                   <input
                     className="input"
-                    style={{ width: 140, fontWeight: 600 }}
+                    style={{ width: 130, fontWeight: 600 }}
                     value={grp.name}
                     onChange={(e) => updateGroup(gIdx, { name: e.target.value })}
-                    placeholder="信号名"
+                    placeholder="路由名"
                   />
                   <select
                     className="select"
@@ -236,139 +234,137 @@ export function EventSheetPage({ onSaved }: Props) {
                     value={grp.redundancy_type}
                     onChange={(e) => updateGroup(gIdx, { redundancy_type: e.target.value as SignalGroupConfig["redundancy_type"] })}
                   >
-                    <option value="single">单路传输</option>
-                    <option value="dual_hardware">双机双路热备</option>
-                    <option value="makito_bonding">Makito 硬件无缝主备</option>
+                    <option value="single">单路</option>
+                    <option value="dual_hardware">双机热备</option>
+                    <option value="makito_bonding">Path Redundancy</option>
                   </select>
-                  <label className="toggle-label">
+                  <label className="switch">
                     <input
                       type="checkbox"
                       checked={grp.expected_active}
                       onChange={(e) => updateGroup(gIdx, { expected_active: e.target.checked })}
                     />
-                    本场开播
+                    告警监控
                   </label>
-                  <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                    {grp.legs.length < 2 && (
-                      <button type="button" className="btn btn-sm" onClick={() => addBackupLeg(gIdx)}>
-                        + 绑定备路
-                      </button>
-                    )}
-                    <button type="button" className="btn btn-danger btn-sm" onClick={() => removeGroup(gIdx)}>
-                      删除信号组
-                    </button>
-                  </div>
                 </div>
-
-                <div style={{ overflowX: "auto" }}>
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>角色</th>
-                        <th>VPS 节点</th>
-                        <th>通道容器名</th>
-                        <th>数据面模式</th>
-                        <th>运营商</th>
-                        <th>发端设备</th>
-                        <th>收端设备</th>
-                        <th>入 / 出端口</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {grp.legs.map((leg, lIdx) => (
-                        <tr key={lIdx}>
-                          <td>
-                            <select
-                              className="select"
-                              value={leg.role}
-                              onChange={(e) => updateLeg(gIdx, lIdx, { role: e.target.value })}
-                            >
-                              <option value="primary">主路</option>
-                              <option value="backup">备路</option>
-                              <option value="single">单路</option>
-                            </select>
-                          </td>
-                          <td>
-                            <input
-                              className="input mono"
-                              style={{ width: 90 }}
-                              value={leg.node_id}
-                              onChange={(e) => updateLeg(gIdx, lIdx, { node_id: e.target.value })}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="input mono"
-                              style={{ width: 110 }}
-                              value={leg.channel_id}
-                              onChange={(e) => updateLeg(gIdx, lIdx, { channel_id: e.target.value })}
-                            />
-                          </td>
-                          <td>
-                            <select
-                              className="select"
-                              value={leg.mode}
-                              onChange={(e) => updateLeg(gIdx, lIdx, { mode: e.target.value as LegConfig["mode"] })}
-                            >
-                              <option value="srt-relay">Mode A 中转</option>
-                              <option value="udp-passthrough">Mode B 透传</option>
-                            </select>
-                          </td>
-                          <td>
-                            <input
-                              className="input"
-                              style={{ width: 80 }}
-                              value={leg.carrier}
-                              onChange={(e) => updateLeg(gIdx, lIdx, { carrier: e.target.value })}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="input"
-                              style={{ width: 165 }}
-                              value={leg.src_device}
-                              onChange={(e) => updateLeg(gIdx, lIdx, { src_device: e.target.value })}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="input"
-                              style={{ width: 165 }}
-                              value={leg.dst_device}
-                              onChange={(e) => updateLeg(gIdx, lIdx, { dst_device: e.target.value })}
-                            />
-                          </td>
-                          <td className="mono" style={{ whiteSpace: "nowrap" }}>
-                            <input
-                              className="input mono"
-                              style={{ width: 72 }}
-                              type="number"
-                              value={leg.in_port}
-                              onChange={(e) => updateLeg(gIdx, lIdx, { in_port: Number(e.target.value) })}
-                            />
-                            {" / "}
-                            <input
-                              className="input mono"
-                              style={{ width: 72 }}
-                              type="number"
-                              value={leg.out_port}
-                              onChange={(e) => updateLeg(gIdx, lIdx, { out_port: Number(e.target.value) })}
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {grp.legs.length < 2 && (
+                    <button type="button" className="btn btn-xs" onClick={() => addBackupLeg(gIdx)}>
+                      + 备路
+                    </button>
+                  )}
+                  <button type="button" className="btn btn-xs btn-danger" onClick={() => removeGroup(gIdx)}>
+                    删除
+                  </button>
                 </div>
               </div>
-            ))}
-          </div>
 
-          <div style={{ marginTop: 14 }}>
-            <button type="button" className="btn" onClick={addGroup}>
-              + 新增逻辑信号组
-            </button>
-          </div>
+              <div style={{ overflowX: "auto" }}>
+                <table className="gw-table">
+                  <thead>
+                    <tr>
+                      <th>角色</th>
+                      <th>节点</th>
+                      <th>容器</th>
+                      <th>模式</th>
+                      <th>运营商</th>
+                      <th>发端设备</th>
+                      <th>收端设备</th>
+                      <th>入 / 出端口</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {grp.legs.map((leg, lIdx) => (
+                      <tr key={lIdx}>
+                        <td>
+                          <select
+                            className="select"
+                            value={leg.role}
+                            onChange={(e) => updateLeg(gIdx, lIdx, { role: e.target.value })}
+                          >
+                            <option value="primary">主</option>
+                            <option value="backup">备</option>
+                            <option value="single">单</option>
+                          </select>
+                        </td>
+                        <td>
+                          <input
+                            className="input mono"
+                            style={{ width: 82 }}
+                            value={leg.node_id}
+                            onChange={(e) => updateLeg(gIdx, lIdx, { node_id: e.target.value })}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            className="input mono"
+                            style={{ width: 102 }}
+                            value={leg.channel_id}
+                            onChange={(e) => updateLeg(gIdx, lIdx, { channel_id: e.target.value })}
+                          />
+                        </td>
+                        <td>
+                          <select
+                            className="select"
+                            value={leg.mode}
+                            onChange={(e) => updateLeg(gIdx, lIdx, { mode: e.target.value as LegConfig["mode"] })}
+                          >
+                            <option value="srt-relay">SRT Relay</option>
+                            <option value="udp-passthrough">UDP Pass</option>
+                          </select>
+                        </td>
+                        <td>
+                          <input
+                            className="input"
+                            style={{ width: 74 }}
+                            value={leg.carrier}
+                            onChange={(e) => updateLeg(gIdx, lIdx, { carrier: e.target.value })}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            className="input"
+                            style={{ width: 155 }}
+                            value={leg.src_device}
+                            onChange={(e) => updateLeg(gIdx, lIdx, { src_device: e.target.value })}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            className="input"
+                            style={{ width: 155 }}
+                            value={leg.dst_device}
+                            onChange={(e) => updateLeg(gIdx, lIdx, { dst_device: e.target.value })}
+                          />
+                        </td>
+                        <td className="mono" style={{ whiteSpace: "nowrap" }}>
+                          <input
+                            className="input mono"
+                            style={{ width: 68 }}
+                            type="number"
+                            value={leg.in_port}
+                            onChange={(e) => updateLeg(gIdx, lIdx, { in_port: Number(e.target.value) })}
+                          />
+                          {" / "}
+                          <input
+                            className="input mono"
+                            style={{ width: 68 }}
+                            type="number"
+                            value={leg.out_port}
+                            onChange={(e) => updateLeg(gIdx, lIdx, { out_port: Number(e.target.value) })}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+
+          <button type="button" className="btn" onClick={addGroup}>
+            + 添加路由
+          </button>
         </>
       )}
     </div>

@@ -75,7 +75,7 @@ func (w *WebhookSender) Send(ctx context.Context, card FeishuCard) error {
 				map[string]any{
 					"tag":  "button",
 					"type": "primary",
-					"text": map[string]any{"tag": "plain_text", "content": "打开分层时间轴留证"},
+					"text": map[string]any{"tag": "plain_text", "content": "查看链路趋势"},
 					"url":  card.LinkURL,
 				},
 			},
@@ -226,13 +226,13 @@ func (a *AlertManager) Evaluate(ctx context.Context, now time.Time, eventName st
 				if shouldNotify && a.cfg.Enabled && a.sender != nil {
 					dur := now.Sub(startTS).Round(time.Second)
 					_ = a.sender.Send(ctx, FeishuCard{
-						Title:    fmt.Sprintf("🟢 [已恢复] %s（%s）", grp.Name, grp.DirectionLabel),
+						Title:    fmt.Sprintf("[恢复] %s · %s", grp.Name, grp.DirectionLabel),
 						Template: "green",
 						Lines: []string{
 							fmt.Sprintf("**场次**：%s", eventName),
-							fmt.Sprintf("**原级别**：%s", severityLabel(prevSev)),
-							fmt.Sprintf("**异常持续**：%s（%s ~ %s）", dur, startTS.Format("15:04:05"), now.Format("15:04:05")),
-							fmt.Sprintf("**当前状态**：%s", grp.Summary),
+							fmt.Sprintf("**原状态**：%s", severityLabel(prevSev)),
+							fmt.Sprintf("**持续**：%s（%s ~ %s）", dur, startTS.Format("15:04:05"), now.Format("15:04:05")),
+							fmt.Sprintf("**当前**：%s", grp.Summary),
 						},
 						LinkURL: a.timelineLink(grp.ID),
 					})
@@ -296,23 +296,20 @@ func (a *AlertManager) Evaluate(ctx context.Context, now time.Time, eventName st
 
 		if shouldSendCard && shouldNotify && a.cfg.Enabled && a.sender != nil {
 			tpl := "orange"
-			icon := "🟡"
 			if grp.Severity == model.SeverityCriticalOutage {
 				tpl = "red"
-				icon = "🔴"
 			}
 			lines := []string{
 				fmt.Sprintf("**场次**：%s", eventName),
 				fmt.Sprintf("**方向**：%s", grp.DirectionLabel),
-				fmt.Sprintf("**告警级别**：%s", severityLabel(grp.Severity)),
-				fmt.Sprintf("**触发时间**：%s（上报节点：%s）", incidentStart.Format("2006-01-02 15:04:05"), a.nodeID),
-				fmt.Sprintf("**自动故障定界**：%s", grp.Summary),
+				fmt.Sprintf("**时间**：%s（节点 %s）", incidentStart.Format("2006-01-02 15:04:05"), a.nodeID),
+				fmt.Sprintf("**详情**：%s", grp.Summary),
 			}
 			if grp.ProtectedBy != "" {
-				lines = append(lines, fmt.Sprintf("**兜底路径**：%s（直播未中断）", grp.ProtectedBy))
+				lines = append(lines, fmt.Sprintf("**在播路径**：%s", grp.ProtectedBy))
 			}
 			_ = a.sender.Send(ctx, FeishuCard{
-				Title:    fmt.Sprintf("%s [%s] %s", icon, severityLabel(grp.Severity), grp.Name),
+				Title:    fmt.Sprintf("[%s] %s", severityLabel(grp.Severity), grp.Name),
 				Template: tpl,
 				Lines:    lines,
 				LinkURL:  a.timelineLink(grp.ID),
@@ -356,11 +353,11 @@ func severityRank(s model.GroupSeverity) int {
 func severityLabel(s model.GroupSeverity) string {
 	switch s {
 	case model.SeverityCriticalOutage:
-		return "紧急·断播/双路全断"
+		return "告警 · 链路中断"
 	case model.SeverityDegradedProtected:
-		return "降级·单路异常备路兜底"
+		return "降级 · 备路在播"
 	case model.SeverityDegradedSingle:
-		return "警告·链路抖动拥塞"
+		return "警告 · 链路抖动"
 	default:
 		return string(s)
 	}

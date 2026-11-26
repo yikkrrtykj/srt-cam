@@ -713,12 +713,12 @@ func NewFeishuTestFunc(cfg config.NodeConfig) func(context.Context) error {
 	sender := notify.NewWebhookSender(cfg.Feishu.WebhookURL, cfg.Feishu.Secret)
 	return func(ctx context.Context) error {
 		return sender.Send(ctx, notify.FeishuCard{
-			Title:    fmt.Sprintf("🔵 [连通测试] SRT-CAM v2 飞书告警已接通 (%s)", cfg.DisplayName),
+			Title:    fmt.Sprintf("[测试] SRT-CAM 告警连通正常 · %s", cfg.DisplayName),
 			Template: "blue",
 			Lines: []string{
-				fmt.Sprintf("**节点**：%s（%s）", cfg.DisplayName, cfg.NodeID),
+				fmt.Sprintf("**节点**：%s (%s)", cfg.DisplayName, cfg.NodeID),
 				fmt.Sprintf("**时间**：%s", time.Now().Format("2006-01-02 15:04:05")),
-				"**说明**：告警链路正常。直播期间将自动执行防抖与主备分级定界推送。",
+				"**状态**：Webhook 连通正常",
 			},
 			LinkURL: cfg.Feishu.DashboardBaseURL,
 		})
