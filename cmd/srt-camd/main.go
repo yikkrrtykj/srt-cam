@@ -208,6 +208,15 @@ func seedDemoHistory(ctx context.Context, store *storage.Store, cfg config.NodeC
 					continue
 				}
 				baseRate := 12.0 + float64(idx%4)*1.6
+				srcPeerIP := fmt.Sprintf("198.51.100.%d", 41+idx)
+				dstPeerIP := leg.TargetAddr
+				if dstPeerIP == "" {
+					dstPeerIP = fmt.Sprintf("203.0.113.%d", 21+idx)
+				}
+				if grp.Direction == model.DirectionHubToVenue {
+					srcPeerIP = fmt.Sprintf("203.0.113.%d", 21+idx)
+					dstPeerIP = fmt.Sprintf("198.51.100.%d", 51+idx)
+				}
 				s := model.ChannelSample{
 					Timestamp:      ts,
 					NodeID:         cfg.NodeID,
@@ -221,25 +230,37 @@ func seedDemoHistory(ctx context.Context, store *storage.Store, cfg config.NodeC
 					PathMedium:     "WAN",
 				}
 				if grp.ExpectedActive {
+					s.SrcPeerIP = srcPeerIP
+					s.DstPeerIP = dstPeerIP
 					s.SrcConnected = true
 					s.DstConnected = true
 					s.SrcMbps = baseRate + 0.3*math.Sin(t/15.0+float64(idx))
 					s.DstMbps = s.SrcMbps
-					s.SrcRTTMs = 45.0 + 5.0*math.Sin(t/25.0+float64(idx))
-					s.DstRTTMs = 53.0 + 6.0*math.Cos(t/28.0+float64(idx))
-					s.SrcTSBPDMs = 250
+					if leg.Mode != model.ModeUDPPassthrough {
+						s.SrcRTTMs = 39.0 + 4.0*math.Sin(t/25.0+float64(idx))
+						s.DstRTTMs = 47.0 + 5.0*math.Cos(t/28.0+float64(idx))
+						s.SrcTSBPDMs = 250
+					}
 
-					if ts >= incidentStart && ts <= incidentEnd && leg.Role == "primary" {
-						if grp.ID == "en-pgm" {
+					if grp.ID == "id-pgm" {
+						s.SrcLost = 3
+						s.SrcRetrans = 3
+					}
+					if grp.ID == "en-pgm" && leg.Role == "primary" {
+						if ts >= incidentStart-30 && ts < incidentStart {
+							s.SrcRetrans = 24
+							s.DstNAKCount = 16
+							s.SrcDropped = 2
+						} else if ts >= incidentStart && ts <= incidentEnd {
 							s.SrcConnected = false
 							s.SrcMbps = 0
 							s.DstMbps = 0
-						} else if grp.ID == "ob-pgm" {
-							s.DstRTTMs = 365.0 + 28.0*math.Sin(t/5.0)
-							s.DstLost = 44
-							s.DstRetrans = 48
-							s.DstDropped = 7
 						}
+					} else if grp.ID == "ob-pgm" && leg.Role == "primary" && ts >= incidentStart && ts <= incidentEnd {
+						s.DstRTTMs = 365.0 + 28.0*math.Sin(t/5.0)
+						s.DstLost = 44
+						s.DstRetrans = 48
+						s.DstDropped = 7
 					}
 					if grp.ID == "map" && leg.Role == "primary" {
 						s.PathMedium = "LO"

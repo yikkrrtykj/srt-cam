@@ -41,6 +41,7 @@ type Snapshot struct {
 	RetransPackets     uint64  `json:"retrans_packets"`
 	NAKReports         uint64  `json:"nak_reports"`
 	NAKLostPackets     uint64  `json:"nak_lost_packets"`
+	DropReqPackets     uint64  `json:"drop_req_packets"`
 	Handshakes         uint64  `json:"handshakes"`
 	Shutdowns          uint64  `json:"shutdowns"`
 	Encrypted          bool    `json:"encrypted"`
@@ -76,6 +77,7 @@ type Forwarder struct {
 	retrans   atomic.Uint64
 	nakCount  atomic.Uint64
 	nakLost   atomic.Uint64
+	dropReq   atomic.Uint64
 	handshake atomic.Uint64
 	shutdown  atomic.Uint64
 	encrypted atomic.Bool
@@ -289,6 +291,12 @@ func (f *Forwarder) inspectUpstreamPacket(payload []byte) {
 		case srtparse.ControlNAK:
 			f.nakCount.Add(1)
 			f.nakLost.Add(uint64(pkt.NAKLostPackets))
+		case srtparse.ControlDropReq:
+			n := pkt.DropReqPackets
+			if n <= 0 {
+				n = 1
+			}
+			f.dropReq.Add(uint64(n))
 		}
 		return
 	}
@@ -310,6 +318,12 @@ func (f *Forwarder) inspectDownstreamPacket(payload []byte) {
 		case srtparse.ControlNAK:
 			f.nakCount.Add(1)
 			f.nakLost.Add(uint64(pkt.NAKLostPackets))
+		case srtparse.ControlDropReq:
+			n := pkt.DropReqPackets
+			if n <= 0 {
+				n = 1
+			}
+			f.dropReq.Add(uint64(n))
 		case srtparse.ControlShutdown:
 			f.shutdown.Add(1)
 		}
@@ -339,6 +353,7 @@ type prevCounters struct {
 	retrans   uint64
 	nakCount  uint64
 	nakLost   uint64
+	dropReq   uint64
 	handshake uint64
 	shutdown  uint64
 }
@@ -374,6 +389,7 @@ func (f *Forwarder) updateSnapshot(dt time.Duration, prev prevCounters) prevCoun
 		retrans:   f.retrans.Load(),
 		nakCount:  f.nakCount.Load(),
 		nakLost:   f.nakLost.Load(),
+		dropReq:   f.dropReq.Load(),
 		handshake: f.handshake.Load(),
 		shutdown:  f.shutdown.Load(),
 	}
@@ -423,6 +439,7 @@ func (f *Forwarder) updateSnapshot(dt time.Duration, prev prevCounters) prevCoun
 		RetransPackets:     cur.retrans - prev.retrans,
 		NAKReports:         cur.nakCount - prev.nakCount,
 		NAKLostPackets:     cur.nakLost - prev.nakLost,
+		DropReqPackets:     cur.dropReq - prev.dropReq,
 		Handshakes:         cur.handshake - prev.handshake,
 		Shutdowns:          cur.shutdown - prev.shutdown,
 		Encrypted:          f.encrypted.Load(),

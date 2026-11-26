@@ -837,6 +837,313 @@ body,
   cursor: pointer;
 }
 
+.gw-table tbody tr.expand-row,
+.gw-table tbody tr.expand-row:hover {
+  background: var(--bg-canvas);
+}
+
+.gw-table tbody tr.expand-row > td {
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.expand-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.expand-btn:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.expand-btn.is-open {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* Haivision SRT Gateway / Makito X4 Single-Signal Health Panel */
+.health-panel {
+  padding: 12px 14px;
+}
+
+.health-panel.is-compact {
+  padding: 0;
+}
+
+.health-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.health-leg-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.health-leg-card.tone-ok { border-left-color: var(--ok); }
+.health-leg-card.tone-warn { border-left-color: var(--warn); }
+.health-leg-card.tone-crit { border-left-color: var(--crit); }
+.health-leg-card.tone-idle { border-left-color: var(--idle); }
+
+.health-leg-head {
+  padding: 7px 12px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.health-leg-ident {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.health-leg-role {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.health-leg-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.health-fault-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.health-fault-text.tone-ok { color: var(--ok); }
+.health-fault-text.tone-warn { color: var(--warn); }
+.health-fault-text.tone-crit { color: var(--crit); font-weight: 600; }
+
+.health-flow-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) 16px minmax(0, 0.78fr) 16px minmax(0, 1.15fr);
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.health-stage {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.health-stage-gw {
+  background: var(--bg-surface);
+}
+
+.health-stage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.health-device {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.health-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.health-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+/* TSBPD Latency Buffer Margin Bar */
+.margin-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.margin-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.margin-val-ok { color: var(--ok); font-weight: 600; }
+.margin-val-warn { color: var(--warn); font-weight: 600; }
+.margin-val-crit { color: var(--crit); font-weight: 700; }
+.margin-val-idle { color: var(--text-muted); }
+
+.margin-track {
+  height: 5px;
+  border-radius: 99px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.margin-fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.2s ease;
+}
+
+.margin-fill.fill-ok { background: var(--ok); }
+.margin-fill.fill-warn { background: var(--warn); }
+.margin-fill.fill-crit { background: var(--crit); }
+.margin-fill.fill-idle { background: var(--idle); }
+
+/* 3-Box Lost / Recovered / Unrecovered Dropped Breakdown */
+.loss-trio {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: auto;
+}
+
+.loss-cell {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 5px 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.loss-cell-recovered {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.loss-cell-ok {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+}
+
+.loss-cell-crit {
+  background: var(--crit-bg);
+  border-color: var(--crit-border);
+}
+
+.loss-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.loss-val {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.loss-cell-recovered .loss-val { color: var(--accent); }
+.loss-cell-ok .loss-val { color: var(--ok); }
+.loss-cell-crit .loss-val { color: var(--crit); }
+.loss-cell-crit .loss-label { color: var(--crit); font-weight: 600; }
+
+.pass-note {
+  margin-top: auto;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-strong);
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* Gateway Compact Key-Value Grid */
+.gw-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: auto;
+}
+
+.gw-kv {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 5px 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 11px;
+}
+
+.gw-kv span {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.gw-kv strong {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.health-compact-foot {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 @media (max-width: 1024px) {
   .shell {
     grid-template-columns: 1fr;
@@ -858,10 +1165,12 @@ body,
   .metrics-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .topo-grid {
+  .topo-grid,
+  .health-flow-grid {
     grid-template-columns: 1fr;
   }
-  .topo-arrow {
+  .topo-arrow,
+  .health-arrow {
     display: none;
   }
 }
@@ -876,3 +1185,4 @@ body,
     grid-template-columns: 1fr !important;
   }
 }
+

@@ -146,6 +146,27 @@ func TestDiagnoseChannelAllScenarios(t *testing.T) {
 			host: healthyHost, cctx: cctx,
 			wantCode: model.FaultDownstreamDegraded, wantLayer: "downstream",
 		},
+		{
+			name: "Mode B passthrough DropReq unrecovered drop",
+			sample: model.ChannelSample{
+				NodeID: "vps-1", ChannelID: "srt-pass1", Mode: model.ModeUDPPassthrough,
+				ProcessState: "running", HasNativeStats: true, PathMedium: "WAN",
+				SrcMbps: 15.0, SrcRetrans: 5, DstNAKCount: 4, SrcDropped: 2,
+			},
+			host: healthyHost, cctx: cctx,
+			wantCode: model.FaultDownstreamDegraded, wantLayer: "downstream",
+		},
+		{
+			name: "Mode A TSBPD buffer margin exhausted (4xRTT > TSBPD)",
+			sample: model.ChannelSample{
+				NodeID: "vps-1", ChannelID: "srt-cam5", Mode: model.ModeSRTRelay,
+				ProcessState: "running", HasNativeStats: true, PathMedium: "WAN",
+				SrcConnected: true, SrcMbps: 12.0, SrcRTTMs: 70, SrcTSBPDMs: 250,
+				DstConnected: true, DstMbps: 12.0, DstRTTMs: 50,
+			},
+			host: healthyHost, cctx: cctx,
+			wantCode: model.FaultUpstreamDegraded, wantLayer: "upstream",
+		},
 	}
 
 	for _, tc := range cases {

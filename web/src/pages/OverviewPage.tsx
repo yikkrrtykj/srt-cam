@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import type { LegLiveView, OverviewResponse, SignalGroupLiveView } from "../types";
 import { api, formatTime, redundancyText, severityText } from "../api";
 import { SafeRestartModal } from "../components/SafeRestartModal";
+import { SignalHealthPanel } from "../components/SignalHealthPanel";
 
 interface Props {
   overview: OverviewResponse;
@@ -38,9 +39,14 @@ function legDotClass(leg: LegLiveView): string {
 export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
   const [filter, setFilter] = useState<FilterTab>("all");
   const [query, setQuery] = useState("");
+  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
   const [restartTarget, setRestartTarget] = useState<RestartTarget | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [testingFeishu, setTestingFeishu] = useState(false);
+
+  function toggleExpand(groupId: string) {
+    setExpandedIds((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
+  }
 
   const activeGroups = overview.groups.filter((g) => g.expected_active);
   const healthyCount = activeGroups.filter((g) => g.severity === "HEALTHY").length;
@@ -328,11 +334,12 @@ export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
           <table className="gw-table">
             <thead>
               <tr>
+                <th style={{ width: 34 }} aria-label="展开" />
                 <th style={{ width: 92 }}>状态</th>
                 <th style={{ width: 170 }}>路由 / 模式</th>
                 <th>传输路径（Source → Gateway → Destination）</th>
                 <th style={{ width: 120 }}>码率 (Mb/s)</th>
-                <th style={{ width: 160 }}>RTT / 丢包</th>
+                <th style={{ width: 205 }}>RTT / 救回 / 弃包</th>
                 <th style={{ width: 72 }}>告警</th>
                 <th style={{ width: 118, textAlign: "right" }}>操作</th>
               </tr>
@@ -340,148 +347,210 @@ export function OverviewPage({ overview, onOpenRoute, onRefresh }: Props) {
             <tbody>
               {filteredGroups.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>
+                  <td colSpan={8} style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>
                     无匹配路由
                   </td>
                 </tr>
               ) : (
                 filteredGroups.map((grp) => {
                   const sev = severityText(grp.severity);
+                  const isExpanded = !!expandedIds[grp.id];
                   return (
-                    <tr key={grp.id} className="clickable" onClick={() => onOpenRoute(grp.id)}>
-                      <td>
-                        <span className={`pill ${sev.cls}`}>
-                          <span className={`dot ${sev.dot}`} />
-                          {sev.label}
-                        </span>
-                      </td>
-
-                      <td>
-                        <button
-                          type="button"
-                          className="route-link"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onOpenRoute(grp.id);
-                          }}
-                        >
-                          {grp.name}
-                        </button>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                          {grp.direction_label} · {redundancyText(grp.redundancy_type)}
-                        </div>
-                      </td>
-
-                      <td>
-                        <div className="leg-flow-list">
-                          {grp.legs.map((leg) => {
-                            const roleTag =
-                              leg.role === "primary" ? "主" : leg.role === "backup" ? "备" : "单";
-                            return (
-                              <div key={`${leg.node_id}-${leg.channel_id}`} className="leg-flow-row">
-                                <span className={`dot ${legDotClass(leg)}`} />
-                                <span className="pill pill-idle" style={{ padding: "0 5px", fontSize: 10 }}>
-                                  {roleTag}
-                                  {leg.carrier ? `·${leg.carrier}` : ""}
-                                </span>
-                                <span className="flow-hop">{leg.src_device || "Source"}</span>
-                                <span className="flow-sep">→</span>
-                                <span className="flow-node mono">
-                                  {leg.node_id}:{leg.in_port}
-                                  {leg.mode === "udp-passthrough" ? " UDP" : `/${leg.out_port}`}
-                                </span>
-                                <span className="flow-sep">→</span>
-                                <span className="flow-hop">{leg.dst_device || "Destination"}</span>
-                                {leg.sample.path_medium.includes("LO") && (
-                                  <span className="pill pill-warn" style={{ padding: "0 5px", fontSize: 10 }}>
-                                    LO
-                                  </span>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </td>
-
-                      <td className="mono">
-                        <div className="leg-flow-list">
-                          {grp.legs.map((leg) => (
-                            <div key={`${leg.node_id}-${leg.channel_id}`}>
-                              {leg.sample.src_mbps.toFixed(1)}
-                              <span style={{ color: "var(--text-muted)" }}> / </span>
-                              {leg.sample.dst_mbps.toFixed(1)}
-                            </div>
-                          ))}
-                        </div>
-                      </td>
-
-                      <td className="mono">
-                        <div className="leg-flow-list">
-                          {grp.legs.map((leg) => {
-                            const s = leg.sample;
-                            if (leg.mode === "udp-passthrough") {
-                              return (
-                                <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 11 }}>
-                                  <span style={{ color: "var(--text-muted)" }}>Pass</span> · 重传 {s.src_retrans} · NAK{" "}
-                                  {s.dst_nak_count}
-                                </div>
-                              );
-                            }
-                            return (
-                              <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 11 }}>
-                                {s.src_rtt_ms > 0 ? `${s.src_rtt_ms.toFixed(0)}` : "-"}/
-                                {s.dst_rtt_ms > 0 ? `${s.dst_rtt_ms.toFixed(0)}ms` : "-"}
-                                <span style={{ color: "var(--text-muted)" }}> · </span>
-                                <span
-                                  style={{
-                                    color: s.src_dropped + s.dst_dropped > 0 ? "var(--crit)" : "var(--text-secondary)",
-                                  }}
-                                >
-                                  弃 {s.src_dropped}/{s.dst_dropped}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </td>
-
-                      <td onClick={(e) => e.stopPropagation()}>
-                        <label className="switch" title="开启后异常触发飞书告警">
-                          <input
-                            type="checkbox"
-                            checked={grp.expected_active}
-                            onChange={() => handleToggleActive(grp)}
-                          />
-                        </label>
-                      </td>
-
-                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          className="btn btn-xs btn-primary"
-                          onClick={() => onOpenRoute(grp.id)}
-                        >
-                          详情
-                        </button>{" "}
-                        {grp.legs[0] && (
+                    <Fragment key={grp.id}>
+                      <tr className="clickable" onClick={() => onOpenRoute(grp.id)}>
+                        <td style={{ paddingRight: 4 }} onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"
-                            className="btn btn-xs"
-                            title={`重启 ${grp.legs[0].node_id}/${grp.legs[0].channel_id}`}
-                            onClick={() =>
-                              setRestartTarget({
-                                nodeId: grp.legs[0].node_id,
-                                nodeName: grp.legs[0].node_name,
-                                channelId: grp.legs[0].channel_id,
-                                signalName: grp.name,
-                              })
-                            }
+                            className={`expand-btn ${isExpanded ? "is-open" : ""}`}
+                            aria-expanded={isExpanded}
+                            title={isExpanded ? "收起单路健康面板" : "展开单路健康面板"}
+                            onClick={() => toggleExpand(grp.id)}
                           >
-                            重启
+                            {isExpanded ? "▾" : "▸"}
                           </button>
-                        )}
-                      </td>
-                    </tr>
+                        </td>
+
+                        <td>
+                          <span className={`pill ${sev.cls}`}>
+                            <span className={`dot ${sev.dot}`} />
+                            {sev.label}
+                          </span>
+                        </td>
+
+                        <td>
+                          <button
+                            type="button"
+                            className="route-link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenRoute(grp.id);
+                            }}
+                          >
+                            {grp.name}
+                          </button>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                            {grp.direction_label} · {redundancyText(grp.redundancy_type)}
+                          </div>
+                        </td>
+
+                        <td>
+                          <div className="leg-flow-list">
+                            {grp.legs.map((leg) => {
+                              const roleTag =
+                                leg.role === "primary" ? "主" : leg.role === "backup" ? "备" : "单";
+                              return (
+                                <div key={`${leg.node_id}-${leg.channel_id}`} className="leg-flow-row">
+                                  <span className={`dot ${legDotClass(leg)}`} />
+                                  <span className="pill pill-idle" style={{ padding: "0 5px", fontSize: 10 }}>
+                                    {roleTag}
+                                    {leg.carrier ? `·${leg.carrier}` : ""}
+                                  </span>
+                                  <span className="flow-hop">{leg.src_device || "Source"}</span>
+                                  <span className="flow-sep">→</span>
+                                  <span className="flow-node mono">
+                                    {leg.node_id}:{leg.in_port}
+                                    {leg.mode === "udp-passthrough" ? " UDP" : `/${leg.out_port}`}
+                                  </span>
+                                  <span className="flow-sep">→</span>
+                                  <span className="flow-hop">{leg.dst_device || "Destination"}</span>
+                                  {leg.sample.path_medium.includes("LO") && (
+                                    <span className="pill pill-warn" style={{ padding: "0 5px", fontSize: 10 }}>
+                                      LO
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </td>
+
+                        <td className="mono">
+                          <div className="leg-flow-list">
+                            {grp.legs.map((leg) => (
+                              <div key={`${leg.node_id}-${leg.channel_id}`}>
+                                {leg.sample.src_mbps.toFixed(1)}
+                                <span style={{ color: "var(--text-muted)" }}> / </span>
+                                {leg.sample.dst_mbps.toFixed(1)}
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+
+                        <td className="mono">
+                          <div className="leg-flow-list">
+                            {grp.legs.map((leg) => {
+                              const s = leg.sample;
+                              const flowing = s.src_mbps >= 0.1;
+                              if (leg.mode === "udp-passthrough") {
+                                return (
+                                  <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 11 }}>
+                                    <span style={{ color: "var(--text-muted)" }}>重传</span> {s.src_retrans} ·{" "}
+                                    <span style={{ color: "var(--text-muted)" }}>NAK</span> {s.dst_nak_count} ·{" "}
+                                    <span
+                                      style={{
+                                        color:
+                                          s.src_dropped > 0
+                                            ? "var(--crit)"
+                                            : flowing
+                                            ? "var(--ok)"
+                                            : "var(--text-muted)",
+                                        fontWeight: s.src_dropped > 0 ? 700 : 500,
+                                      }}
+                                    >
+                                      {s.src_dropped > 0 ? `弃包 ${s.src_dropped}` : "0 弃包"}
+                                    </span>
+                                  </div>
+                                );
+                              }
+                              const totalDropped = s.src_dropped + s.dst_dropped;
+                              const totalRetrans = s.src_retrans + s.dst_retrans;
+                              return (
+                                <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 11 }}>
+                                  {s.src_rtt_ms > 0 ? `${s.src_rtt_ms.toFixed(0)}` : "-"}/
+                                  {s.dst_rtt_ms > 0 ? `${s.dst_rtt_ms.toFixed(0)}ms` : "-"}
+                                  <span style={{ color: "var(--text-muted)" }}> · </span>
+                                  {totalRetrans > 0 && totalDropped === 0 && (
+                                    <span style={{ color: "var(--accent)", marginRight: 5 }}>
+                                      救回 {totalRetrans}
+                                    </span>
+                                  )}
+                                  <span
+                                    style={{
+                                      color:
+                                        totalDropped > 0
+                                          ? "var(--crit)"
+                                          : flowing
+                                          ? "var(--ok)"
+                                          : "var(--text-muted)",
+                                      fontWeight: totalDropped > 0 ? 700 : 500,
+                                    }}
+                                  >
+                                    {totalDropped > 0 ? `弃 ${s.src_dropped}/${s.dst_dropped}` : "0 弃包"}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </td>
+
+                        <td onClick={(e) => e.stopPropagation()}>
+                          <label className="switch" title="开启后异常触发飞书告警">
+                            <input
+                              type="checkbox"
+                              checked={grp.expected_active}
+                              onChange={() => handleToggleActive(grp)}
+                            />
+                          </label>
+                        </td>
+
+                        <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            className="btn btn-xs btn-primary"
+                            onClick={() => onOpenRoute(grp.id)}
+                          >
+                            详情
+                          </button>{" "}
+                          {grp.legs[0] && (
+                            <button
+                              type="button"
+                              className="btn btn-xs"
+                              title={`重启 ${grp.legs[0].node_id}/${grp.legs[0].channel_id}`}
+                              onClick={() =>
+                                setRestartTarget({
+                                  nodeId: grp.legs[0].node_id,
+                                  nodeName: grp.legs[0].node_name,
+                                  channelId: grp.legs[0].channel_id,
+                                  signalName: grp.name,
+                                })
+                              }
+                            >
+                              重启
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+
+                      {isExpanded && (
+                        <tr className="expand-row">
+                          <td colSpan={8}>
+                            <SignalHealthPanel
+                              group={grp}
+                              compact
+                              onOpenRoute={onOpenRoute}
+                              onRestartLeg={(leg) =>
+                                setRestartTarget({
+                                  nodeId: leg.node_id,
+                                  nodeName: leg.node_name,
+                                  channelId: leg.channel_id,
+                                  signalName: grp.name,
+                                })
+                              }
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })
               )}

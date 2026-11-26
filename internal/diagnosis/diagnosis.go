@@ -71,6 +71,11 @@ func DiagnoseChannel(
 			return model.FaultUpstreamOffline, "upstream",
 				fmt.Sprintf("%s入站无流 (0.00 Mb/s) · 透传正常 (0 重启) · 查 %s", tag, srcName)
 		}
+		if sample.SrcDropped > 0 {
+			return model.FaultDownstreamDegraded, "downstream",
+				fmt.Sprintf("%s未恢复弃包 (DropReq %d) · %.2f Mb/s · 重传 %d / NAK %d",
+					tag, sample.SrcDropped, sample.SrcMbps, sample.SrcRetrans, sample.DstNAKCount)
+		}
 		if sample.DstNAKCount >= th.HighNAKLost || sample.SrcRetrans >= th.HighRetrans {
 			return model.FaultDownstreamDegraded, "downstream",
 				fmt.Sprintf("%s链路抖动 · %.2f Mb/s · 重传 %d / NAK %d",
@@ -81,7 +86,7 @@ func DiagnoseChannel(
 				fmt.Sprintf("%sLO 代理 · %.2f Mb/s（SRT 统计不反映底层 TCP 抖动）", tag, sample.SrcMbps)
 		}
 		return model.FaultHealthy, "none",
-			fmt.Sprintf("%s正常 · %.2f Mb/s · 重传 %d / NAK %d",
+			fmt.Sprintf("%s正常 · %.2f Mb/s · 重传 %d / NAK %d / 弃包 0",
 				tag, sample.SrcMbps, sample.SrcRetrans, sample.DstNAKCount)
 	}
 
@@ -121,10 +126,12 @@ func DiagnoseChannel(
 				tag, sample.SrcMbps, srcName)
 	}
 
+	upBufferExhausted := sample.SrcTSBPDMs > 0 && sample.SrcRTTMs*4 > sample.SrcTSBPDMs
 	upDegraded := sample.SrcRTTMs >= th.HighRTTMs ||
 		sample.SrcDropped > 0 ||
 		sample.SrcLost >= th.HighLossPerSample ||
-		sample.SrcRetrans >= th.HighRetrans
+		sample.SrcRetrans >= th.HighRetrans ||
+		upBufferExhausted
 
 	downDegraded := sample.DstRTTMs >= th.HighRTTMs ||
 		sample.DstDropped > 0 ||
@@ -132,6 +139,12 @@ func DiagnoseChannel(
 		sample.DstRetrans >= th.HighRetrans
 
 	if upDegraded && !downDegraded {
+		if upBufferExhausted && sample.SrcDropped == 0 && sample.SrcRTTMs < th.HighRTTMs &&
+			sample.SrcLost < th.HighLossPerSample && sample.SrcRetrans < th.HighRetrans {
+			return model.FaultUpstreamDegraded, "upstream",
+				fmt.Sprintf("%s上行缓冲余量不足 · 4×RTT %.0fms > TSBPD %.0fms · 下游正常",
+					tag, sample.SrcRTTMs*4, sample.SrcTSBPDMs)
+		}
 		return model.FaultUpstreamDegraded, "upstream",
 			fmt.Sprintf("%s上行抖动 · RTT %.0fms / 丢包 %d / 重传 %d / 丢弃 %d · 下游正常",
 				tag, sample.SrcRTTMs, sample.SrcLost, sample.SrcRetrans, sample.SrcDropped)

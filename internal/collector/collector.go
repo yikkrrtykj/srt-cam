@@ -71,13 +71,15 @@ func demoLogsText(nodeID, channelID string, now time.Time) string {
 	if len(channelID) >= 8 && channelID[:8] == "srt-pass" {
 		return fmt.Sprintf(`%s [srt-passd:%s] listening UDP :31111 -> 203.0.113.10:41111 (metrics http://127.0.0.1:19101/stats)
 %s [srt-passd:%s] SRT handshake observed from 198.51.100.41:52104 (AES encrypted payload passthrough)
-%s [srt-passd:%s] FLOW up=12.14Mb/s retrans=0 nak=0 peer=198.51.100.41 medium=WAN
+%s [srt-passd:%s] FLOW up=12.14Mb/s retrans=2 nak=2 drop_req=0 peer=198.51.100.41 medium=WAN
+%s [srt-passd:%s] WARN DropReq observed drop_req=2 retrans=24 nak=16 node=%s peer=198.51.100.41
 %s [srt-passd:%s] WARN upstream silent (>5s) node=%s peer=198.51.100.41
 %s [srt-passd:%s] SRT handshake observed from 198.51.100.41:52988 (reconnected)
-%s [srt-passd:%s] FLOW up=12.18Mb/s retrans=1 nak=0 peer=198.51.100.41 medium=WAN`,
+%s [srt-passd:%s] FLOW up=12.18Mb/s retrans=1 nak=0 drop_req=0 peer=198.51.100.41 medium=WAN`,
 			t(1200), channelID,
 			t(1195), channelID,
 			t(600), channelID,
+			t(495), channelID, nodeID,
 			t(480), channelID, nodeID,
 			t(358), channelID,
 			t(10), channelID,
@@ -359,6 +361,7 @@ func (c *Collector) collectPassthrough(ctx context.Context, now time.Time, cid s
 	sample.SrcMbps = snap.UpstreamMbps
 	sample.DstMbps = snap.UpstreamMbps // L4 passthrough forwards full media stream to decoder
 	sample.SrcRetrans = int64(snap.RetransPackets)
+	sample.SrcDropped = int64(snap.DropReqPackets)
 	sample.DstNAKCount = int64(snap.NAKLostPackets)
 	return sample
 }
@@ -391,6 +394,15 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 			}
 			baseRate := 12.0 + float64(idx%4)*1.8
 			jitter := 0.35 * math.Sin(elapsed/5.0+float64(idx))
+			srcPeerIP := fmt.Sprintf("198.51.100.%d", 41+idx)
+			dstPeerIP := leg.TargetAddr
+			if dstPeerIP == "" {
+				dstPeerIP = fmt.Sprintf("203.0.113.%d", 21+idx)
+			}
+			if grp.Direction == model.DirectionHubToVenue {
+				srcPeerIP = fmt.Sprintf("203.0.113.%d", 21+idx)
+				dstPeerIP = fmt.Sprintf("198.51.100.%d", 51+idx)
+			}
 
 			s := model.ChannelSample{
 				Timestamp:      now.Unix(),
@@ -406,26 +418,58 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 			}
 
 			if grp.ExpectedActive {
+				s.SrcPeerIP = srcPeerIP
+				s.DstPeerIP = dstPeerIP
 				s.SrcConnected = true
 				s.DstConnected = true
 				s.SrcMbps = baseRate + jitter
 				s.DstMbps = baseRate + jitter
-				s.SrcRTTMs = 46.0 + 6.0*math.Sin(elapsed/7.0+float64(idx))
-				s.DstRTTMs = 54.0 + 5.0*math.Cos(elapsed/9.0+float64(idx))
-				s.SrcTSBPDMs = 250
+				if leg.Mode != model.ModeUDPPassthrough {
+					s.SrcRTTMs = 38.0 + 4.0*math.Sin(elapsed/7.0+float64(idx))
+					s.DstRTTMs = 46.0 + 5.0*math.Cos(elapsed/9.0+float64(idx))
+					s.SrcTSBPDMs = 250
+				}
 
-				// Simulate a realistic 20s telecom primary dip on ob-pgm or en-pgm so user sees live failover!
-				if (grp.ID == "en-pgm" || grp.ID == "ob-pgm") && leg.Role == "primary" && cycle >= 40 && cycle <= 62 {
-					if grp.ID == "en-pgm" {
+				// Show ARQ recovery with 0 unrecovered drops on healthy routes so Recovered vs Dropped is clear
+				if grp.ID == "id-pgm" {
+					s.SrcLost = 3
+					s.SrcRetrans = 3
+					s.SrcDropped = 0
+					s.DstLost = 2
+					s.DstRetrans = 2
+					s.DstDropped = 0
+				}
+				// Show amber TSBPD headroom (~84% of 250ms) without triggering outage on cam2
+				if grp.ID == "cam2" {
+					s.SrcRTTMs = 52.0 + 2.0*math.Sin(elapsed/6.0)
+				}
+				// Healthy baseline retrans/NAK on Mode B passthrough
+				if leg.Mode == model.ModeUDPPassthrough {
+					s.SrcRetrans = 2
+					s.DstNAKCount = 2
+					s.SrcDropped = 0
+				}
+
+				// Simulate Mode B DropReq degradation right before hard outage, and 20s failover window
+				if grp.ID == "en-pgm" && leg.Role == "primary" {
+					if cycle >= 25 && cycle < 40 {
+						s.SrcRetrans = 24
+						s.DstNAKCount = 16
+						s.SrcDropped = 2
+					} else if cycle >= 40 && cycle <= 62 {
 						s.SrcMbps = 0
 						s.DstMbps = 0
+						s.SrcRetrans = 0
+						s.DstNAKCount = 0
+						s.SrcDropped = 0
 						s.SrcConnected = false
-					} else {
-						s.DstRTTMs = 340.0 + 35.0*math.Sin(elapsed)
-						s.DstLost = 38
-						s.DstRetrans = 42
-						s.DstDropped = 6
 					}
+				}
+				if grp.ID == "ob-pgm" && leg.Role == "primary" && cycle >= 40 && cycle <= 62 {
+					s.DstRTTMs = 340.0 + 35.0*math.Sin(elapsed)
+					s.DstLost = 38
+					s.DstRetrans = 42
+					s.DstDropped = 6
 				}
 				if grp.ID == "map" && leg.Role == "primary" {
 					s.PathMedium = "LO"

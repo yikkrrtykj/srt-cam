@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChannelLogsResponse, GroupTimelineResponse, SignalGroupLiveView } from "../types";
 import { api, formatDateTime, formatTime, formatUptime, redundancyText, severityText } from "../api";
 import { SyncedTimeline, type SyncedTimelineHandle } from "../components/SyncedTimeline";
+import { SignalHealthPanel, type LegWindowStats } from "../components/SignalHealthPanel";
 import { SafeRestartModal } from "../components/SafeRestartModal";
 
 interface Props {
@@ -151,6 +152,18 @@ export function TimelinePage({
 
   const sev = data ? severityText(data.live_group.severity) : { label: "-", cls: "pill-idle", dot: "dot-idle" };
 
+  const legWindowStats = useMemo<Record<string, LegWindowStats>>(() => {
+    if (!data) return {};
+    const out: Record<string, LegWindowStats> = {};
+    for (const lt of data.legs) {
+      const key = `${lt.leg.node_id}/${lt.leg.channel_id}`;
+      const maxRestarts = lt.samples.reduce((m, s) => Math.max(m, s.restart_count), 0);
+      const udpDrops = lt.host.reduce((sum, h) => sum + h.udp_rcvbuf_errors, 0);
+      out[key] = { maxRestarts, udpDrops };
+    }
+    return out;
+  }, [data]);
+
   return (
     <div>
       {!cleanView ? (
@@ -229,7 +242,7 @@ export function TimelinePage({
 
       {data && (
         <>
-          {/* Haivision Gateway 3-Stage Endpoint Topology Panel */}
+          {/* Haivision SRT Gateway / Makito X4 Single-Signal Health Panel */}
           <section className="panel">
             <div className="panel-head">
               <div className="panel-title">
@@ -242,79 +255,21 @@ export function TimelinePage({
               </div>
             </div>
 
-            <div className="topo-grid">
-              <div className="topo-box">
-                <div className="topo-box-label">
-                  <span>SOURCE · 发端</span>
-                  <span>Caller</span>
-                </div>
-                {data.live_group.legs.map((leg) => (
-                  <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 12 }}>
-                    <div style={{ fontWeight: 600 }}>
-                      {leg.role === "primary" ? "[主] " : leg.role === "backup" ? "[备] " : ""}
-                      {leg.src_device || "-"}
-                    </div>
-                    <div className="mono" style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                      {leg.carrier || "-"} · {leg.sample.src_mbps.toFixed(2)} Mb/s
-                      {leg.mode === "srt-relay" && leg.sample.src_rtt_ms > 0
-                        ? ` · RTT ${leg.sample.src_rtt_ms.toFixed(0)}ms`
-                        : ""}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="topo-arrow">→</div>
-
-              <div className="topo-box">
-                <div className="topo-box-label">
-                  <span>GATEWAY · 云端中转</span>
-                  <span>{data.group.legs[0]?.mode === "udp-passthrough" ? "L4 UDP" : "SRT Relay"}</span>
-                </div>
-                {data.legs.map((lt) => {
-                  const maxR = lt.samples.reduce((m, s) => Math.max(m, s.restart_count), 0);
-                  const udpDrops = lt.host.reduce((sum, h) => sum + h.udp_rcvbuf_errors, 0);
-                  return (
-                    <div key={`${lt.leg.node_id}-${lt.leg.channel_id}`} style={{ fontSize: 12 }}>
-                      <div className="mono" style={{ fontWeight: 600 }}>
-                        {lt.leg.node_id} / {lt.leg.channel_id}{" "}
-                        <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
-                          (:{lt.leg.in_port}
-                          {lt.leg.mode === "srt-relay" ? `→:${lt.leg.out_port}` : ""})
-                        </span>
-                      </div>
-                      <div className="mono" style={{ fontSize: 11, color: maxR === 0 && udpDrops === 0 ? "var(--ok)" : "var(--crit)" }}>
-                        重启 {maxR} 次 · UDP 缓冲丢包 {udpDrops}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="topo-arrow">→</div>
-
-              <div className="topo-box">
-                <div className="topo-box-label">
-                  <span>DESTINATION · 收端</span>
-                  <span>{data.group.legs[0]?.mode === "udp-passthrough" ? "Listener" : "Caller"}</span>
-                </div>
-                {data.live_group.legs.map((leg) => (
-                  <div key={`${leg.node_id}-${leg.channel_id}`} style={{ fontSize: 12 }}>
-                    <div style={{ fontWeight: 600 }}>
-                      {leg.role === "primary" ? "[主] " : leg.role === "backup" ? "[备] " : ""}
-                      {leg.dst_device || "-"}
-                    </div>
-                    <div className="mono" style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                      {leg.sample.dst_mbps.toFixed(2)} Mb/s
-                      {leg.mode === "srt-relay" && leg.sample.dst_rtt_ms > 0
-                        ? ` · RTT ${leg.sample.dst_rtt_ms.toFixed(0)}ms`
-                        : ""}
-                      {leg.sample.path_medium && leg.sample.path_medium !== "-" ? ` · ${leg.sample.path_medium}` : ""}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <SignalHealthPanel
+              group={data.live_group}
+              legStats={legWindowStats}
+              onRestartLeg={
+                cleanView
+                  ? undefined
+                  : (leg) =>
+                      setRestartTarget({
+                        nodeId: leg.node_id,
+                        nodeName: leg.node_name,
+                        channelId: leg.channel_id,
+                        signalName: data.group.name,
+                      })
+              }
+            />
 
             <div className={`status-strip sev-${data.live_group.severity}`}>
               <span>{data.live_group.summary}</span>
@@ -466,7 +421,7 @@ export function TimelinePage({
                           </td>
                           <td className="mono">
                             {leg.mode === "udp-passthrough"
-                              ? `重传 ${s.src_retrans} · NAK ${s.dst_nak_count}`
+                              ? `重传 ${s.src_retrans} · NAK ${s.dst_nak_count} · DropReq ${s.src_dropped}`
                               : `上 ${s.src_lost}/${s.src_retrans}/${s.src_dropped} · 下 ${s.dst_lost}/${s.dst_retrans}/${s.dst_dropped}`}
                           </td>
                           <td className="mono">
