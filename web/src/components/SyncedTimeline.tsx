@@ -84,7 +84,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
     exportReportPNG(headerLines: string[]) {
       const charts = chartsRef.current;
       if (charts.length === 0) return;
-      const bg = theme === "dark" ? "#151b23" : "#ffffff";
+      const bg = theme === "dark" ? "#20232a" : "#ffffff";
       const imgs = charts.map((c) => {
         const img = new Image();
         img.src = c.getDataURL({ type: "png", pixelRatio: 2, backgroundColor: bg });
@@ -111,14 +111,14 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
-        ctx.fillStyle = theme === "dark" ? "#0d1117" : "#f0f2f5";
+        ctx.fillStyle = theme === "dark" ? "#181a1f" : "#f0f2f5";
         ctx.fillRect(0, 0, width, totalH);
 
-        ctx.fillStyle = "#0a0e14";
+        ctx.fillStyle = "#121419";
         ctx.fillRect(0, 0, width, headerH);
         headerLines.forEach((line, idx) => {
           ctx.font = idx === 0 ? "bold 26px sans-serif" : "19px sans-serif";
-          ctx.fillStyle = idx === 0 ? "#ffffff" : "#9aa7b8";
+          ctx.fillStyle = idx === 0 ? "#ffffff" : "#a7b0be";
           ctx.fillText(line, 28, 40 + idx * 32);
         });
 
@@ -148,10 +148,10 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
     chartsRef.current = instances;
 
     const isDark = theme === "dark";
-    const axisLineColor = isDark ? "#2d3a4b" : "#cbd5e1";
-    const splitLineColor = isDark ? "#1e2734" : "#f1f5f9";
-    const labelColor = isDark ? "#8b949e" : "#64748b";
-    const legendColor = isDark ? "#9aa7b8" : "#475569";
+    const axisLineColor = isDark ? "#383e4c" : "#cbd5e1";
+    const splitLineColor = isDark ? "rgba(255,255,255,0.06)" : "#f1f5f9";
+    const labelColor = isDark ? "#8b94a5" : "#64748b";
+    const legendColor = isDark ? "#a7b0be" : "#475569";
 
     const visibleLegs = showBackupOverlay ? data.legs : data.legs.slice(0, 1);
     const primaryLeg = visibleLegs[0];
@@ -172,10 +172,10 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
 
     const tooltipCommon = {
       trigger: "axis" as const,
-      axisPointer: { type: "cross" as const, lineStyle: { color: "#6e7c8e", type: "dashed" as const } },
-      backgroundColor: isDark ? "rgba(13, 17, 23, 0.96)" : "rgba(15, 23, 42, 0.94)",
-      borderColor: "#324054",
-      textStyle: { color: "#e6edf3", fontSize: 12 },
+      axisPointer: { type: "cross" as const, lineStyle: { color: "#788294", type: "dashed" as const } },
+      backgroundColor: isDark ? "rgba(20, 22, 28, 0.96)" : "rgba(15, 23, 42, 0.94)",
+      borderColor: "#404756",
+      textStyle: { color: "#eceff4", fontSize: 12 },
     };
 
     // Layer 1: Ingest (Source -> Gateway)
@@ -186,8 +186,9 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           name: `${legLabel(primaryLeg)} 入站 Mb/s`,
           type: "line",
           showSymbol: false,
-          lineStyle: { width: 2, color: "#2f81f7" },
-          areaStyle: { color: "rgba(47, 129, 247, 0.10)" },
+          itemStyle: { color: "#818cf8" },
+          lineStyle: { width: 2, color: "#818cf8" },
+          areaStyle: { color: "rgba(129, 140, 248, 0.10)" },
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.src_mbps.toFixed(2))),
         },
         {
@@ -195,7 +196,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           type: "line",
           yAxisIndex: 1,
           showSymbol: false,
-          lineStyle: { width: 1.4, type: "dashed", color: "#e3b341" },
+          itemStyle: { color: isDark ? "#e2e8f0" : "#1e293b" },
+          lineStyle: { width: 1.5, type: "dashed", color: isDark ? "#e2e8f0" : "#1e293b" },
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.src_rtt_ms.toFixed(1))),
         },
         {
@@ -203,7 +205,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           type: "bar",
           yAxisIndex: 1,
           barMaxWidth: 5,
-          itemStyle: { color: "rgba(227, 179, 65, 0.58)" },
+          itemStyle: { color: "rgba(245, 158, 11, 0.65)" },
           data: toTimeSeries(primaryLeg.samples, (s) => s.src_retrans),
         },
         {
@@ -211,7 +213,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           type: "bar",
           yAxisIndex: 1,
           barMaxWidth: 5,
-          itemStyle: { color: "#f85149" },
+          itemStyle: { color: "#ef4444" },
           data: toTimeSeries(primaryLeg.samples, (s) => s.src_dropped),
         }
       );
@@ -221,7 +223,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         name: `${legLabel(backupLeg)} 入站 Mb/s`,
         type: "line",
         showSymbol: false,
-        lineStyle: { width: 1.9, color: "#3fb950" },
+        itemStyle: { color: "#34d399" },
+        lineStyle: { width: 1.9, color: "#34d399" },
         data: toTimeSeries(backupLeg.samples, (s) => Number(s.src_mbps.toFixed(2))),
       });
     }
@@ -234,7 +237,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
       xAxis: commonTimeAxis,
       yAxis: [
         { type: "value", name: "Mb/s", min: 0, splitLine: { lineStyle: { color: splitLineColor } }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
-        { type: "value", name: "ms / pkt", min: 0, splitLine: { show: false }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
+        { type: "value", name: "ms / pkt", min: 0, max: (v: { max: number }) => Math.max(v.max, 10), splitLine: { show: false }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
       ],
       series: l1Series,
     });
@@ -247,7 +250,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           name: `${primaryLeg.leg.node_id} CPU%`,
           type: "line",
           showSymbol: false,
-          lineStyle: { width: 1.6, color: "#8b949e" },
+          itemStyle: { color: "#94a3b8" },
+          lineStyle: { width: 1.6, color: "#94a3b8" },
           data: toTimeSeries(primaryLeg.host, (h) => Number(h.cpu_percent.toFixed(1))),
         },
         {
@@ -256,7 +260,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           step: "end",
           yAxisIndex: 1,
           showSymbol: false,
-          lineStyle: { width: 2, color: "#3fb950" },
+          itemStyle: { color: "#34d399" },
+          lineStyle: { width: 2, color: "#34d399" },
           data: toTimeSeries(primaryLeg.samples, (s) => s.restart_count),
         },
         {
@@ -264,7 +269,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           type: "bar",
           yAxisIndex: 1,
           barMaxWidth: 7,
-          itemStyle: { color: "#f85149" },
+          itemStyle: { color: "#ef4444" },
           data: toTimeSeries(primaryLeg.host, (h) => h.udp_rcvbuf_errors),
         }
       );
@@ -274,7 +279,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         name: `${backupLeg.leg.node_id} CPU%`,
         type: "line",
         showSymbol: false,
-        lineStyle: { width: 1.3, type: "dashed", color: "#3fb950" },
+        itemStyle: { color: "#34d399" },
+        lineStyle: { width: 1.3, type: "dashed", color: "#34d399" },
         data: toTimeSeries(backupLeg.host, (h) => Number(h.cpu_percent.toFixed(1))),
       });
     }
@@ -287,7 +293,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
       xAxis: commonTimeAxis,
       yAxis: [
         { type: "value", name: "CPU%", min: 0, max: 100, splitLine: { lineStyle: { color: splitLineColor } }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
-        { type: "value", name: "次 / 包", min: 0, minInterval: 1, splitLine: { show: false }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
+        { type: "value", name: "次 / 包", min: 0, max: (v: { max: number }) => Math.max(v.max, 5), minInterval: 1, splitLine: { show: false }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
       ],
       series: l2Series,
     });
@@ -301,6 +307,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           name: `${legLabel(primaryLeg)} 出站 Mb/s`,
           type: "line",
           showSymbol: false,
+          itemStyle: { color: "#38bdf8" },
           lineStyle: { width: 2, color: "#38bdf8" },
           areaStyle: { color: "rgba(56, 189, 248, 0.10)" },
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.dst_mbps.toFixed(2))),
@@ -310,7 +317,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           type: "line",
           yAxisIndex: 1,
           showSymbol: false,
-          lineStyle: { width: 1.4, type: "dashed", color: "#f97316" },
+          itemStyle: { color: "#f59e0b" },
+          lineStyle: { width: 1.4, type: "dashed", color: "#f59e0b" },
           data: toTimeSeries(primaryLeg.samples, (s) => Number(s.dst_rtt_ms.toFixed(1))),
         },
         {
@@ -318,7 +326,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           type: "bar",
           yAxisIndex: 1,
           barMaxWidth: 5,
-          itemStyle: { color: "rgba(249, 115, 22, 0.52)" },
+          itemStyle: { color: "rgba(245, 158, 11, 0.58)" },
           data: toTimeSeries(primaryLeg.samples, (s) => (isPass ? s.dst_nak_count : s.dst_retrans)),
         },
         {
@@ -326,7 +334,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
           type: "bar",
           yAxisIndex: 1,
           barMaxWidth: 5,
-          itemStyle: { color: "#f85149" },
+          itemStyle: { color: "#ef4444" },
           data: toTimeSeries(primaryLeg.samples, (s) => (isPass ? s.src_dropped : s.dst_dropped)),
         }
       );
@@ -336,7 +344,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         name: `${legLabel(backupLeg)} 出站 Mb/s`,
         type: "line",
         showSymbol: false,
-        lineStyle: { width: 1.9, color: "#3fb950" },
+        itemStyle: { color: "#34d399" },
+        lineStyle: { width: 1.9, color: "#34d399" },
         data: toTimeSeries(backupLeg.samples, (s) => Number(s.dst_mbps.toFixed(2))),
       });
     }
@@ -349,7 +358,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
       xAxis: commonTimeAxis,
       yAxis: [
         { type: "value", name: "Mb/s", min: 0, splitLine: { lineStyle: { color: splitLineColor } }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
-        { type: "value", name: "ms / pkt", min: 0, splitLine: { show: false }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
+        { type: "value", name: "ms / pkt", min: 0, max: (v: { max: number }) => Math.max(v.max, 10), splitLine: { show: false }, axisLabel: { fontSize: 11, color: labelColor }, nameTextStyle: { color: labelColor } },
       ],
       series: l3Series,
     });
@@ -362,8 +371,9 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         type: "line",
         step: "end",
         showSymbol: false,
-        lineStyle: { width: 2.2, color: "#f85149" },
-        areaStyle: { color: "rgba(248, 81, 73, 0.16)" },
+        itemStyle: { color: "#ef4444" },
+        lineStyle: { width: 2.2, color: "#ef4444" },
+        areaStyle: { color: "rgba(239, 68, 68, 0.16)" },
         data: toTimeSeries(primaryLeg.samples, (s) => faultSeverityScore(s.fault_code)),
       });
     }
@@ -373,7 +383,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
         type: "line",
         step: "end",
         showSymbol: false,
-        lineStyle: { width: 2, color: "#3fb950" },
+        itemStyle: { color: "#34d399" },
+        lineStyle: { width: 2, color: "#34d399" },
         data: toTimeSeries(backupLeg.samples, (s) => faultSeverityScore(s.fault_code)),
       });
     }
@@ -429,8 +440,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
               height: 18,
               bottom: 6,
               borderColor: axisLineColor,
-              backgroundColor: isDark ? "#0d1117" : "#f8fafc",
-              fillerColor: "rgba(47, 129, 247, 0.22)",
+              backgroundColor: isDark ? "#181a1f" : "#f8fafc",
+              fillerColor: "rgba(91, 141, 239, 0.22)",
               textStyle: { color: labelColor },
             },
           ],

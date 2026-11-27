@@ -251,10 +251,14 @@ func seedDemoHistory(ctx context.Context, store *storage.Store, cfg config.NodeC
 					s.DstConnected = true
 					s.SrcMbps = baseRate + 0.3*math.Sin(t/15.0+float64(idx))
 					s.DstMbps = s.SrcMbps
+					s.SrcPackets = int64(s.SrcMbps * 450)
+					s.DstPackets = int64(s.DstMbps * 450)
 					if leg.Mode != model.ModeUDPPassthrough {
 						s.SrcRTTMs = 39.0 + 4.0*math.Sin(t/25.0+float64(idx))
 						s.DstRTTMs = 47.0 + 5.0*math.Cos(t/28.0+float64(idx))
 						s.SrcTSBPDMs = 250
+						s.SrcLinkBWMbps = 46.0 + 4.0*math.Sin(t/50.0+float64(idx))
+						s.DstLinkBWMbps = 43.0 + 3.5*math.Cos(t/55.0+float64(idx))
 					}
 
 					if grp.ID == "id-pgm" {
@@ -270,6 +274,8 @@ func seedDemoHistory(ctx context.Context, store *storage.Store, cfg config.NodeC
 							s.SrcConnected = false
 							s.SrcMbps = 0
 							s.DstMbps = 0
+							s.SrcPackets = 0
+							s.DstPackets = 0
 						}
 					} else if grp.ID == "ob-pgm" && leg.Role == "primary" && ts >= incidentStart && ts <= incidentEnd {
 						s.DstRTTMs = 365.0 + 28.0*math.Sin(t/5.0)

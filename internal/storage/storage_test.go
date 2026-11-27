@@ -36,9 +36,13 @@ func TestStoreInsertQueryAndPrune(t *testing.T) {
 			SrcConnected:   true,
 			SrcMbps:        12.0,
 			SrcRTTMs:       42.0,
+			SrcPackets:     250,
+			SrcLinkBWMbps:  48.5,
 			DstConnected:   true,
 			DstMbps:        12.0,
 			DstRTTMs:       55.0,
+			DstPackets:     250,
+			DstLinkBWMbps:  44.0,
 			PathMedium:     "WAN",
 			HasNativeStats: true,
 			FaultCode:      model.FaultHealthy,
@@ -55,6 +59,9 @@ func TestStoreInsertQueryAndPrune(t *testing.T) {
 	}
 	if len(got) != 10 {
 		t.Fatalf("got %d samples, want 10", len(got))
+	}
+	if got[0].SrcPackets != 250 || got[0].SrcLinkBWMbps != 48.5 || got[0].DstPackets != 250 || got[0].DstLinkBWMbps != 44.0 {
+		t.Fatalf("unexpected packets/linkBW round-trip: %+v", got[0])
 	}
 
 	// Open & close a fault event

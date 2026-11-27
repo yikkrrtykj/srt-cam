@@ -22,20 +22,28 @@ type Collector struct {
 	host       *HostCollector
 	httpClient *http.Client
 
-	mu           sync.Mutex
-	prevRestarts map[string]int
-	demoStart    time.Time
+	mu             sync.Mutex
+	prevRestarts   map[string]int
+	lastSrcStatsTS map[string]time.Time
+	lastDstStatsTS map[string]time.Time
+	lastSrcPeerIP  map[string]string
+	lastDstPeerIP  map[string]string
+	demoStart      time.Time
 }
 
 // New creates a Collector for the local VPS node.
 func New(cfg config.NodeConfig) *Collector {
 	return &Collector{
-		cfg:          cfg,
-		docker:       NewDockerClient(cfg.DockerSocket),
-		host:         NewHostCollector(cfg.NodeID),
-		httpClient:   &http.Client{Timeout: 2 * time.Second},
-		prevRestarts: make(map[string]int),
-		demoStart:    time.Now(),
+		cfg:            cfg,
+		docker:         NewDockerClient(cfg.DockerSocket),
+		host:           NewHostCollector(cfg.NodeID),
+		httpClient:     &http.Client{Timeout: 2 * time.Second},
+		prevRestarts:   make(map[string]int),
+		lastSrcStatsTS: make(map[string]time.Time),
+		lastDstStatsTS: make(map[string]time.Time),
+		lastSrcPeerIP:  make(map[string]string),
+		lastDstPeerIP:  make(map[string]string),
+		demoStart:      time.Now(),
 	}
 }
 
@@ -246,30 +254,82 @@ func (c *Collector) collectRelay(
 	if info.Running {
 		logText, err := c.docker.RecentLogs(ctx, cid, 120, 400)
 		if err == nil {
-			parsed := ParseSRTLogs(logText, now, 20*time.Second)
+			c.mu.Lock()
+			prevSrcTS := c.lastSrcStatsTS[cid]
+			prevDstTS := c.lastDstStatsTS[cid]
+			cachedSrcIP := c.lastSrcPeerIP[cid]
+			cachedDstIP := c.lastDstPeerIP[cid]
+			c.mu.Unlock()
+
+			parsed := ParseSRTLogsSince(logText, now, 30*time.Second, prevSrcTS, prevDstTS)
+
+			c.mu.Lock()
+			if !parsed.SrcLastTS.IsZero() && parsed.SrcLastTS.After(prevSrcTS) {
+				c.lastSrcStatsTS[cid] = parsed.SrcLastTS
+			}
+			if !parsed.DstLastTS.IsZero() && parsed.DstLastTS.After(prevDstTS) {
+				c.lastDstStatsTS[cid] = parsed.DstLastTS
+			}
+			if !parsed.SrcConnected {
+				delete(c.lastSrcPeerIP, cid)
+				cachedSrcIP = ""
+			} else if parsed.SrcPeerIP != "" {
+				c.lastSrcPeerIP[cid] = parsed.SrcPeerIP
+				cachedSrcIP = parsed.SrcPeerIP
+			}
+			if !parsed.DstConnected {
+				delete(c.lastDstPeerIP, cid)
+				cachedDstIP = ""
+			} else if parsed.DstPeerIP != "" {
+				c.lastDstPeerIP[cid] = parsed.DstPeerIP
+				cachedDstIP = parsed.DstPeerIP
+			}
+			c.mu.Unlock()
+
 			sample.HasNativeStats = parsed.HasNativeStats
 			sample.SrcConnected = parsed.SrcConnected
 			sample.SrcMbps = parsed.SrcMbps
 			sample.SrcRTTMs = parsed.SrcRTTMs
+			sample.SrcPackets = parsed.SrcPackets
 			sample.SrcLost = parsed.SrcLost
 			sample.SrcRetrans = parsed.SrcRetrans
 			sample.SrcDropped = parsed.SrcDropped
 			sample.SrcTSBPDMs = parsed.SrcTSBPDMs
+			sample.SrcLinkBWMbps = parsed.SrcLinkBWMbps
 			sample.SrcPeerIP = parsed.SrcPeerIP
+			if sample.SrcPeerIP == "" && parsed.SrcConnected {
+				sample.SrcPeerIP = cachedSrcIP
+			}
 			sample.DstConnected = parsed.DstConnected
 			sample.DstMbps = parsed.DstMbps
 			sample.DstRTTMs = parsed.DstRTTMs
+			sample.DstPackets = parsed.DstPackets
 			sample.DstLost = parsed.DstLost
 			sample.DstRetrans = parsed.DstRetrans
 			sample.DstDropped = parsed.DstDropped
+			sample.DstLinkBWMbps = parsed.DstLinkBWMbps
 			sample.DstPeerIP = parsed.DstPeerIP
+			if sample.DstPeerIP == "" && parsed.DstConnected {
+				sample.DstPeerIP = cachedDstIP
+			}
 			sample.PathMedium = parsed.PathMedium
 		}
+	} else {
+		c.mu.Lock()
+		delete(c.lastSrcPeerIP, cid)
+		delete(c.lastDstPeerIP, cid)
+		c.mu.Unlock()
 	}
 
-	// Enhance LO/WAN detection from /proc/net/udp if available
+	// Enhance LO/WAN detection from cached peer IPs and /proc/net/udp if available
 	hasLO := sample.PathMedium == "LO" || sample.PathMedium == "WAN+LO"
 	hasWAN := sample.PathMedium == "WAN" || sample.PathMedium == "WAN+LO"
+	if sample.SrcPeerIP != "" {
+		classifyIPMedium(sample.SrcPeerIP, &hasLO, &hasWAN)
+	}
+	if sample.DstPeerIP != "" {
+		classifyIPMedium(sample.DstPeerIP, &hasLO, &hasWAN)
+	}
 	if p, ok := udpPeers[leg.InPort]; ok {
 		if sample.SrcPeerIP == "" {
 			sample.SrcPeerIP = p.PeerIP
@@ -360,6 +420,8 @@ func (c *Collector) collectPassthrough(ctx context.Context, now time.Time, cid s
 	sample.DstConnected = snap.State == "FLOW" || snap.LastDownstreamUnix > 0
 	sample.SrcMbps = snap.UpstreamMbps
 	sample.DstMbps = snap.UpstreamMbps // L4 passthrough forwards full media stream to decoder
+	sample.SrcPackets = int64(snap.UpstreamPackets)
+	sample.DstPackets = int64(snap.DownstreamPackets)
 	sample.SrcRetrans = int64(snap.RetransPackets)
 	sample.SrcDropped = int64(snap.DropReqPackets)
 	sample.DstNAKCount = int64(snap.NAKLostPackets)
@@ -424,10 +486,14 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 				s.DstConnected = true
 				s.SrcMbps = baseRate + jitter
 				s.DstMbps = baseRate + jitter
+				s.SrcPackets = int64(s.SrcMbps * 180)
+				s.DstPackets = int64(s.DstMbps * 180)
 				if leg.Mode != model.ModeUDPPassthrough {
 					s.SrcRTTMs = 38.0 + 4.0*math.Sin(elapsed/7.0+float64(idx))
 					s.DstRTTMs = 46.0 + 5.0*math.Cos(elapsed/9.0+float64(idx))
 					s.SrcTSBPDMs = 250
+					s.SrcLinkBWMbps = 45.0 + 4.5*math.Sin(elapsed/18.0+float64(idx))
+					s.DstLinkBWMbps = 42.0 + 3.5*math.Cos(elapsed/20.0+float64(idx))
 				}
 
 				// Show ARQ recovery with 0 unrecovered drops on healthy routes so Recovered vs Dropped is clear
@@ -459,6 +525,8 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 					} else if cycle >= 40 && cycle <= 62 {
 						s.SrcMbps = 0
 						s.DstMbps = 0
+						s.SrcPackets = 0
+						s.DstPackets = 0
 						s.SrcRetrans = 0
 						s.DstNAKCount = 0
 						s.SrcDropped = 0

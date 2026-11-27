@@ -67,24 +67,28 @@ type ChannelSample struct {
 	UptimeSec    int64  `json:"uptime_sec"`
 
 	// Layer 1: upstream (Sender -> Cloud)
-	SrcConnected bool    `json:"src_connected"`
-	SrcMbps      float64 `json:"src_mbps"`
-	SrcRTTMs     float64 `json:"src_rtt_ms"`
-	SrcLost      int64   `json:"src_lost"`
-	SrcRetrans   int64   `json:"src_retrans"`
-	SrcDropped   int64   `json:"src_dropped"`
-	SrcTSBPDMs   float64 `json:"src_tsbpd_ms"`
-	SrcPeerIP    string  `json:"src_peer_ip"`
+	SrcConnected  bool    `json:"src_connected"`
+	SrcMbps       float64 `json:"src_mbps"`
+	SrcRTTMs      float64 `json:"src_rtt_ms"`
+	SrcPackets    int64   `json:"src_packets,omitempty"`
+	SrcLost       int64   `json:"src_lost"`
+	SrcRetrans    int64   `json:"src_retrans"`
+	SrcDropped    int64   `json:"src_dropped"`
+	SrcTSBPDMs    float64 `json:"src_tsbpd_ms"`
+	SrcLinkBWMbps float64 `json:"src_link_bw_mbps,omitempty"`
+	SrcPeerIP     string  `json:"src_peer_ip"`
 
 	// Layer 3: downstream (Cloud -> Receiver)
-	DstConnected bool    `json:"dst_connected"`
-	DstMbps      float64 `json:"dst_mbps"`
-	DstRTTMs     float64 `json:"dst_rtt_ms"`
-	DstLost      int64   `json:"dst_lost"`
-	DstRetrans   int64   `json:"dst_retrans"`
-	DstDropped   int64   `json:"dst_dropped"`
-	DstNAKCount  int64   `json:"dst_nak_count"`
-	DstPeerIP    string  `json:"dst_peer_ip"`
+	DstConnected  bool    `json:"dst_connected"`
+	DstMbps       float64 `json:"dst_mbps"`
+	DstRTTMs      float64 `json:"dst_rtt_ms"`
+	DstPackets    int64   `json:"dst_packets,omitempty"`
+	DstLost       int64   `json:"dst_lost"`
+	DstRetrans    int64   `json:"dst_retrans"`
+	DstDropped    int64   `json:"dst_dropped"`
+	DstNAKCount   int64   `json:"dst_nak_count"`
+	DstLinkBWMbps float64 `json:"dst_link_bw_mbps,omitempty"`
+	DstPeerIP     string  `json:"dst_peer_ip"`
 
 	// Path metadata & telemetry quality
 	PathMedium     string `json:"path_medium"`      // WAN, LO, WAN+LO, -

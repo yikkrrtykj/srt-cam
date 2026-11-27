@@ -1,46 +1,46 @@
-/* Broadcast MCR & Gateway Design Tokens (Haivision SRT Gateway / HydraSRT inspired) */
+/* Broadcast MCR & Gateway Design Tokens (Haivision SRT Gateway / Makito X4 charcoal) */
 :root,
 [data-theme="dark"] {
-  --bg-canvas: #0d1117;
-  --bg-surface: #151b23;
-  --bg-elevated: #1b232e;
-  --bg-hover: #212b38;
-  --bg-rail: #0a0e14;
-  --bg-rail-hover: #151d28;
-  --bg-rail-active: #1c2a3d;
-  --bg-input: #0f141b;
+  --bg-canvas: #181a1f;
+  --bg-surface: #20232a;
+  --bg-elevated: #282c34;
+  --bg-hover: #2f3440;
+  --bg-rail: #121419;
+  --bg-rail-hover: #1d2028;
+  --bg-rail-active: #272d3a;
+  --bg-input: #14171d;
 
-  --border-subtle: #242f3f;
-  --border-strong: #324054;
+  --border-subtle: #303542;
+  --border-strong: #404756;
 
-  --text-primary: #e6edf3;
-  --text-secondary: #9aa7b8;
-  --text-muted: #6e7c8e;
-  --text-rail: #9aa7b8;
+  --text-primary: #eceff4;
+  --text-secondary: #a7b0be;
+  --text-muted: #788294;
+  --text-rail: #9aa3b2;
   --text-rail-active: #ffffff;
 
-  --accent: #2f81f7;
-  --accent-hover: #4493f8;
-  --accent-soft: rgba(47, 129, 247, 0.14);
-  --accent-border: rgba(47, 129, 247, 0.35);
+  --accent: #5b8def;
+  --accent-hover: #74a0f5;
+  --accent-soft: rgba(91, 141, 239, 0.16);
+  --accent-border: rgba(91, 141, 239, 0.38);
 
-  --ok: #3fb950;
-  --ok-bg: rgba(46, 160, 67, 0.14);
-  --ok-border: rgba(63, 185, 80, 0.36);
+  --ok: #34d399;
+  --ok-bg: rgba(52, 211, 153, 0.13);
+  --ok-border: rgba(52, 211, 153, 0.35);
 
-  --warn: #e3b341;
-  --warn-bg: rgba(210, 153, 34, 0.14);
-  --warn-border: rgba(227, 179, 65, 0.36);
+  --warn: #f59e0b;
+  --warn-bg: rgba(245, 158, 11, 0.14);
+  --warn-border: rgba(245, 158, 11, 0.36);
 
-  --crit: #f85149;
-  --crit-bg: rgba(248, 81, 73, 0.14);
-  --crit-border: rgba(248, 81, 73, 0.38);
+  --crit: #ef4444;
+  --crit-bg: rgba(239, 68, 68, 0.15);
+  --crit-border: rgba(239, 68, 68, 0.38);
 
   --idle: #8b949e;
   --idle-bg: rgba(139, 148, 158, 0.12);
   --idle-border: rgba(139, 148, 158, 0.28);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
   --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
 
@@ -1201,6 +1201,7 @@ body,
 .hv-card.sev-DEGRADED_SINGLE { border-left-color: var(--warn); }
 .hv-card.sev-CRITICAL_OUTAGE { border-left-color: var(--crit); }
 .hv-card.sev-IDLE { border-left-color: var(--idle); }
+.hv-card.is-awaiting { border-left-color: var(--warn); }
 
 .hv-card.is-open {
   border-color: var(--border-strong);
@@ -1212,6 +1213,7 @@ body,
 .hv-card.sev-DEGRADED_SINGLE.is-open { border-left-color: var(--warn); }
 .hv-card.sev-CRITICAL_OUTAGE.is-open { border-left-color: var(--crit); }
 .hv-card.sev-IDLE.is-open { border-left-color: var(--idle); }
+.hv-card.is-awaiting.is-open { border-left-color: var(--warn); }
 
 .hv-card-row {
   display: flex;
@@ -1492,6 +1494,21 @@ body,
   color: var(--text-primary);
   font-weight: 600;
   text-align: right;
+}
+
+.hv-stat-note {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border-left: 2px solid var(--warn);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.hv-stat-note.is-crit {
+  border-left-color: var(--crit);
 }
 
 @media (max-width: 1024px) {

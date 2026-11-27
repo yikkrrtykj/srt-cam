@@ -62,6 +62,15 @@ function primaryDisplayLeg(grp: SignalGroupLiveView): LegLiveView | undefined {
   return grp.legs.find((l) => l.role === "primary") ?? grp.legs[0];
 }
 
+function isAwaitingDownstream(grp: SignalGroupLiveView): boolean {
+  return (
+    grp.expected_active &&
+    grp.severity === "CRITICAL_OUTAGE" &&
+    grp.legs.length > 0 &&
+    grp.legs.every((l) => l.node_online && l.sample.fault_code === "DOWNSTREAM_OFFLINE")
+  );
+}
+
 export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props) {
   const [filter, setFilter] = useState<FilterTab>("all");
   const [query, setQuery] = useState("");
@@ -83,7 +92,9 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
       g.severity === "DEGRADED_PROTECTED" ||
       g.severity === "DEGRADED_SINGLE"
   ).length;
-  const offlineCount = activeGroups.filter((g) => g.severity === "CRITICAL_OUTAGE").length;
+  const offlineCount = activeGroups.filter(
+    (g) => g.severity === "CRITICAL_OUTAGE" && !isAwaitingDownstream(g)
+  ).length;
   const totalMbps = overview.groups.reduce(
     (sum, g) => sum + g.legs.reduce((s, l) => s + l.sample.src_mbps, 0),
     0
@@ -223,7 +234,10 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
         ) : (
           filteredGroups.map((grp) => {
             const leg = primaryDisplayLeg(grp);
-            const sev = severityText(grp.severity);
+            const awaitingDown = isAwaitingDownstream(grp);
+            const sev = awaitingDown
+              ? { label: "待拉流", cls: "pill-warn", dot: "dot-warn" }
+              : severityText(grp.severity);
             const isOpen = expandedId === grp.id;
 
             const s = leg?.sample;
@@ -239,17 +253,21 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
               ? `${leg.node_id} :${leg.in_port}${!isPass ? `→:${leg.out_port}` : ""}`
               : "-";
 
-            const statusColor =
-              grp.severity === "HEALTHY"
-                ? "var(--ok)"
-                : grp.severity === "CRITICAL_OUTAGE"
-                ? "var(--crit)"
-                : grp.severity === "IDLE"
-                ? "var(--idle)"
-                : "var(--warn)";
+            const statusColor = awaitingDown
+              ? "var(--warn)"
+              : grp.severity === "HEALTHY"
+              ? "var(--ok)"
+              : grp.severity === "CRITICAL_OUTAGE"
+              ? "var(--crit)"
+              : grp.severity === "IDLE"
+              ? "var(--idle)"
+              : "var(--warn)";
 
             return (
-              <section key={grp.id} className={`hv-card sev-${grp.severity} ${isOpen ? "is-open" : ""}`}>
+              <section
+                key={grp.id}
+                className={`hv-card sev-${grp.severity} ${awaitingDown ? "is-awaiting" : ""} ${isOpen ? "is-open" : ""}`}
+              >
                 <div
                   className="hv-card-row"
                   role="button"
@@ -279,6 +297,11 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
                       <span className="hv-card-name">{grp.name}</span>
                       {grp.severity !== "HEALTHY" && (
                         <span className={`pill ${sev.cls}`}>{sev.label}</span>
+                      )}
+                      {awaitingDown && (
+                        <span className="hv-sub-tag" style={{ color: "var(--warn)" }}>
+                          入站正常 · 等待收端拉流
+                        </span>
                       )}
                       {grp.protected_by && (
                         <span className="hv-sub-tag">{grp.protected_by} 在播</span>
