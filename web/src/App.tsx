@@ -333,7 +333,7 @@ export function App() {
           ) : tab === "alerts" ? (
             <AlertsPage overview={overview} onRefreshOverview={() => void loadOverview()} />
           ) : (
-            <NodesPage nodes={overview.nodes} />
+            <NodesPage nodes={overview.nodes} onNodesChanged={() => void loadOverview()} />
           )}
         </main>
       </div>

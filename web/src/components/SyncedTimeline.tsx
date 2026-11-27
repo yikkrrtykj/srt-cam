@@ -158,7 +158,7 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
     const spanSec = Math.max(data.to_ts - data.from_ts, 300);
     const gapThresholdSec = Math.max(30, Math.ceil((spanSec / 600) * 3));
 
-    const baseGrid = { left: 50, right: 48, top: 48, bottom: 24 };
+    const baseGrid = { left: 50, right: 48, top: 56, bottom: 24 };
     const commonTimeAxis = {
       type: "time" as const,
       min: data.from_ts * 1000,
@@ -179,6 +179,8 @@ export const SyncedTimeline = forwardRef<SyncedTimelineHandle, Props>(function S
 
     const tooltipCommon = {
       trigger: "axis" as const,
+      confine: true,
+      appendToBody: true,
       axisPointer: { type: "cross" as const, lineStyle: { color: "#4E5768", type: "dashed" as const } },
       backgroundColor: "rgba(17, 19, 24, 0.96)",
       borderColor: "#2C3240",

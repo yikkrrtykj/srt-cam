@@ -8,7 +8,10 @@ import type {
   FaultEvent,
   GroupTimelineResponse,
   LegLiveView,
+  LocalNodeUpdate,
+  NodesConfigView,
   OverviewResponse,
+  PeerNodeUpsert,
   SignalGroupLiveView,
 } from "./types";
 
@@ -80,6 +83,21 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   testFeishu: () => reqJSON<{ ok: boolean }>("/api/v1/alerts/test", { method: "POST" }),
+  getNodesConfig: () => reqJSON<NodesConfigView>("/api/v1/nodes/config"),
+  updateLocalNode: (payload: LocalNodeUpdate) =>
+    reqJSON<NodesConfigView>("/api/v1/nodes/local", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  upsertPeerNode: (payload: PeerNodeUpsert) =>
+    reqJSON<NodesConfigView>("/api/v1/nodes/peers", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deletePeerNode: (nodeId: string) =>
+    reqJSON<NodesConfigView>(`/api/v1/nodes/peers/${encodeURIComponent(nodeId)}`, {
+      method: "DELETE",
+    }),
 };
 
 export function formatTime(unixSec: number): string {
@@ -143,6 +161,12 @@ export function auditActionText(action: string): string {
     case "test_feishu_alert":
     case "test_feishu":
       return "发送测试飞书";
+    case "update_local_node":
+      return "更新本机信息";
+    case "upsert_peer_node":
+      return "添加/编辑服务器";
+    case "delete_peer_node":
+      return "移除远端服务器";
     default:
       return action;
   }

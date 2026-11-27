@@ -174,6 +174,8 @@ export function TelemetryChartsAndStats({ group, nodes, legIdx, layout }: Props)
     const labelColor = "#757E8F";
     const tooltipStyle = {
       trigger: "axis" as const,
+      confine: true,
+      appendToBody: true,
       axisPointer: { type: "line" as const, lineStyle: { color: "#4E5768", type: "dashed" as const } },
       backgroundColor: "rgba(17, 19, 24, 0.96)",
       borderColor: "#2C3240",

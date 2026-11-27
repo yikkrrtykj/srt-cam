@@ -261,3 +261,41 @@ export interface AlertConfigUpdate {
   thresholds: ThresholdConfig;
 }
 
+export interface LocalNodeView {
+  node_id: string;
+  display_name: string;
+  region: string;
+  public_ip: string;
+  cluster_token: string;
+}
+
+export interface PeerNodeView {
+  node_id: string;
+  display_name: string;
+  region: string;
+  public_ip: string;
+  api_url: string;
+  token_configured: boolean;
+}
+
+export interface NodesConfigView {
+  local: LocalNodeView;
+  peers: PeerNodeView[];
+}
+
+export interface LocalNodeUpdate {
+  display_name: string;
+  region: string;
+  public_ip: string;
+}
+
+export interface PeerNodeUpsert {
+  node_id: string;
+  display_name: string;
+  region: string;
+  public_ip: string;
+  api_url: string;
+  api_token: string;
+}
+
+

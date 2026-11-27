@@ -5,23 +5,30 @@ set -euo pipefail
 
 NODE_ID="vps-1"
 DISPLAY_NAME=""
+REGION=""
+PUBLIC_IP=""
 LISTEN_PORT="8080"
 USERNAME="admin"
 PASSWORD=""
 CLUSTER_TOKEN=""
 OUT_DIR="deploy"
 FORCE=0
+BRING_UP=0
 
 usage() {
   cat <<'EOF'
 Usage: bash scripts/init-v2-node.sh [options]
   --node-id <id>          Node ID (default: vps-1)
   --name <label>          Display name (default: <node-id>)
+  --region <label>        Server region label (e.g. Singapore, LosAngeles)
+  --public-ip <ip>        Public IPv4 shown in console & SRT push/pull URLs
   --port <port>           HTTP listen port on 0.0.0.0 (default: 8080)
   --user <username>       Login username (default: admin)
   --password <password>   Login password (prompted if omitted)
   --cluster-token <tok>   Shared cluster token across VPS nodes (random if omitted)
   --out-dir <dir>         Output directory (default: deploy)
+  --up                    Also start all 10 SRT relay channels (srt-cam1..10),
+                          add UFW rules if UFW is active, and launch srt-camd
   --force                 Overwrite existing config.json
 EOF
 }
@@ -30,11 +37,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --node-id) NODE_ID="$2"; shift 2 ;;
     --name) DISPLAY_NAME="$2"; shift 2 ;;
+    --region) REGION="$2"; shift 2 ;;
+    --public-ip) PUBLIC_IP="$2"; shift 2 ;;
     --port) LISTEN_PORT="$2"; shift 2 ;;
     --user) USERNAME="$2"; shift 2 ;;
     --password) PASSWORD="$2"; shift 2 ;;
     --cluster-token) CLUSTER_TOKEN="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
+    --up) BRING_UP=1; shift ;;
     --force) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -90,15 +100,15 @@ fi
 
 mkdir -p "$OUT_DIR"
 
-python3 - "$CONFIG_FILE" "$NODE_ID" "$DISPLAY_NAME" "$LISTEN_PORT" "$USERNAME" "$HASH" "$SESSION_SECRET" "$CLUSTER_TOKEN" <<'PY'
+python3 - "$CONFIG_FILE" "$NODE_ID" "$DISPLAY_NAME" "$REGION" "$PUBLIC_IP" "$LISTEN_PORT" "$USERNAME" "$HASH" "$SESSION_SECRET" "$CLUSTER_TOKEN" <<'PY'
 import json, sys
 
-out_path, node_id, display_name, port, username, pw_hash, sess_secret, cluster_tok = sys.argv[1:]
+out_path, node_id, display_name, region, public_ip, port, username, pw_hash, sess_secret, cluster_tok = sys.argv[1:]
 cfg = {
     "node_id": node_id,
     "display_name": display_name,
-    "region": "",
-    "public_ip": "",
+    "region": region,
+    "public_ip": public_ip,
     "listen_addr": f"0.0.0.0:{port}",
     "docker_socket": "/var/run/docker.sock",
     "db_path": "/var/lib/srt-cam/telemetry.db",
@@ -147,17 +157,43 @@ fi
 if [[ "$OUT_DIR" == /* ]]; then
   MOUNT_SRC="$OUT_DIR"
 else
-  MOUNT_SRC="\$PWD/${OUT_DIR}"
+  MOUNT_SRC="$PWD/${OUT_DIR}"
+fi
+
+if [[ "$BRING_UP" -eq 1 ]]; then
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    echo "[srt-cam] UFW 已启用，自动放行 10 路 SRT 端口 (UDP 11111:11120, 21111:21120) 及控制端口 (TCP ${LISTEN_PORT})"
+    ufw allow 11111:11120/udp >/dev/null
+    ufw allow 21111:21120/udp >/dev/null
+    ufw allow "${LISTEN_PORT}/tcp" >/dev/null
+  fi
+  echo "[srt-cam] 启动全部 10 路 SRT 中转通道 (srt-cam1..10)..."
+  docker compose -f deploy/docker-compose.v2.yml up -d --build
+  mkdir -p /var/lib/srt-cam
+  docker rm -f srt-camd >/dev/null 2>&1 || true
+  docker run -d --name srt-camd --restart unless-stopped --network host \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "${MOUNT_SRC}:/etc/srt-cam" \
+    -v /var/lib/srt-cam:/var/lib/srt-cam \
+    srt-camd:v2 --config /etc/srt-cam/config.json --events /etc/srt-cam/event-sheet.json >/dev/null
+  echo "[srt-cam] 完成！全部 10 路通道及控制面 srt-camd 均已运行。"
 fi
 
 cat <<EOF
 已生成配置文件：${CONFIG_FILE} (权限 600)
   - 节点 ID      : ${NODE_ID}
-  - 访问方式     : http://<VPS_PUBLIC_IP>:${LISTEN_PORT}
+  - 访问方式     : http://${PUBLIC_IP:-<VPS_PUBLIC_IP>}:${LISTEN_PORT}
   - 登录账号     : ${USERNAME}
   - Cluster Token: ${CLUSTER_TOKEN}  (多台 VPS 互通时填相同 Token)
 
-下一步启动命令（使用 --network host 以便读取本地 Mode A 缩略图与 Mode B 指标）：
+如需手动启动 10 路中转通道与控制台（或直接加 --up 参数一键拉起）：
+  # 1. 启动全部 10 路 SRT 中转容器 (推流 UDP 21111-21120 / 拉流 UDP 11111-11120)
+  docker compose -f deploy/docker-compose.v2.yml up -d --build
+
+  # 2. 如本机开启 UFW 防火墙，记得放行端口（云厂商安全组同样需要放行）
+  ufw allow 11111:11120/udp && ufw allow 21111:21120/udp && ufw allow ${LISTEN_PORT}/tcp
+
+  # 3. 启动控制面 srt-camd
   mkdir -p /var/lib/srt-cam
   docker run -d --name srt-camd --restart unless-stopped --network host \\
     -v /var/run/docker.sock:/var/run/docker.sock \\

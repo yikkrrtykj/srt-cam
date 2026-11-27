@@ -290,6 +290,8 @@ func ValidateEventSheet(sheet EventSheet) error {
 		if len(g.Legs) == 0 {
 			return fmt.Errorf("signal_group %q: at least one leg is required", g.ID)
 		}
+		seenLegs := make(map[string]bool)
+		roleCounts := make(map[string]int)
 		for lidx, leg := range g.Legs {
 			if leg.NodeID == "" || leg.ChannelID == "" {
 				return fmt.Errorf("signal_group %q leg[%d]: node_id and channel_id are required", g.ID, lidx)
@@ -297,6 +299,15 @@ func ValidateEventSheet(sheet EventSheet) error {
 			if leg.Mode != model.ModeSRTRelay && leg.Mode != model.ModeUDPPassthrough {
 				return fmt.Errorf("signal_group %q leg[%d]: invalid mode %q", g.ID, lidx, leg.Mode)
 			}
+			legKey := leg.NodeID + "/" + leg.ChannelID
+			if seenLegs[legKey] {
+				return fmt.Errorf("信号「%s」的主备链路不能重复使用同一服务器的同一通道 (%s)", g.Name, legKey)
+			}
+			seenLegs[legKey] = true
+			roleCounts[leg.Role]++
+		}
+		if len(g.Legs) == 2 && (roleCounts["primary"] != 1 || roleCounts["backup"] != 1) {
+			return fmt.Errorf("信号「%s」双路配置必须为一主一备（不能同时为主路或同时为备路）", g.Name)
 		}
 	}
 	return nil
