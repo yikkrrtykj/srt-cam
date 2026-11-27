@@ -168,6 +168,18 @@ func NewAlertManager(nodeID string, isPrimary bool, cfg config.FeishuConfig, sto
 	}
 }
 
+// UpdateConfig hot-reloads Feishu settings and refreshes the webhook sender safely.
+func (a *AlertManager) UpdateConfig(cfg config.FeishuConfig) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg = cfg
+	if cfg.Enabled && cfg.WebhookURL != "" {
+		a.sender = NewWebhookSender(cfg.WebhookURL, cfg.Secret)
+	} else {
+		a.sender = nil
+	}
+}
+
 // UpdateWatchdog records whether the primary monitor node is reachable (for backup nodes).
 func (a *AlertManager) UpdateWatchdog(now time.Time, primaryHealthy bool) bool {
 	if a.isPrimary {
@@ -192,8 +204,12 @@ func (a *AlertManager) UpdateWatchdog(now time.Time, primaryHealthy bool) bool {
 // Evaluate processes live SignalGroup views, persists debounced fault_events, and sends tiered Feishu cards.
 func (a *AlertManager) Evaluate(ctx context.Context, now time.Time, eventName string, groups []model.SignalGroupLiveView, primaryHealthy bool) {
 	shouldNotify := a.UpdateWatchdog(now, primaryHealthy)
-	debounce := time.Duration(a.cfg.DebounceSec) * time.Second
-	cooldown := time.Duration(a.cfg.CooldownSec) * time.Second
+	a.mu.Lock()
+	cfg := a.cfg
+	sender := a.sender
+	a.mu.Unlock()
+	debounce := time.Duration(cfg.DebounceSec) * time.Second
+	cooldown := time.Duration(cfg.CooldownSec) * time.Second
 
 	for _, grp := range groups {
 		isBad := grp.ExpectedActive && (grp.Severity == model.SeverityCriticalOutage ||
@@ -223,9 +239,9 @@ func (a *AlertManager) Evaluate(ctx context.Context, now time.Time, eventName st
 				if a.store != nil && eventID > 0 {
 					_ = a.store.CloseFaultEvent(ctx, eventID, now.Unix())
 				}
-				if shouldNotify && a.cfg.Enabled && a.sender != nil {
+				if shouldNotify && cfg.Enabled && sender != nil {
 					dur := now.Sub(startTS).Round(time.Second)
-					_ = a.sender.Send(ctx, FeishuCard{
+					_ = sender.Send(ctx, FeishuCard{
 						Title:    fmt.Sprintf("[恢复] %s · %s", grp.Name, grp.DirectionLabel),
 						Template: "green",
 						Lines: []string{
@@ -234,7 +250,7 @@ func (a *AlertManager) Evaluate(ctx context.Context, now time.Time, eventName st
 							fmt.Sprintf("**持续**：%s（%s ~ %s）", dur, startTS.Format("15:04:05"), now.Format("15:04:05")),
 							fmt.Sprintf("**当前**：%s", grp.Summary),
 						},
-						LinkURL: a.timelineLink(grp.ID),
+						LinkURL: timelineLinkFor(cfg.DashboardBaseURL, grp.ID),
 					})
 				}
 				continue
@@ -294,7 +310,7 @@ func (a *AlertManager) Evaluate(ctx context.Context, now time.Time, eventName st
 			}
 		}
 
-		if shouldSendCard && shouldNotify && a.cfg.Enabled && a.sender != nil {
+		if shouldSendCard && shouldNotify && cfg.Enabled && sender != nil {
 			tpl := "orange"
 			if grp.Severity == model.SeverityCriticalOutage {
 				tpl = "red"
@@ -308,21 +324,21 @@ func (a *AlertManager) Evaluate(ctx context.Context, now time.Time, eventName st
 			if grp.ProtectedBy != "" {
 				lines = append(lines, fmt.Sprintf("**在播路径**：%s", grp.ProtectedBy))
 			}
-			_ = a.sender.Send(ctx, FeishuCard{
+			_ = sender.Send(ctx, FeishuCard{
 				Title:    fmt.Sprintf("[%s] %s", severityLabel(grp.Severity), grp.Name),
 				Template: tpl,
 				Lines:    lines,
-				LinkURL:  a.timelineLink(grp.ID),
+				LinkURL:  timelineLinkFor(cfg.DashboardBaseURL, grp.ID),
 			})
 		}
 	}
 }
 
-func (a *AlertManager) timelineLink(groupID string) string {
-	if a.cfg.DashboardBaseURL == "" {
+func timelineLinkFor(baseURL, groupID string) string {
+	if baseURL == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s/#/timeline/%s", a.cfg.DashboardBaseURL, groupID)
+	return fmt.Sprintf("%s/#/timeline/%s", baseURL, groupID)
 }
 
 func firstBadLeg(grp model.SignalGroupLiveView) model.LegLiveView {

@@ -1,5 +1,15 @@
 import { useState } from "react";
-import { api } from "../api";
+import { RotateCcw } from "lucide-react";
+import { api } from "@/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 interface Props {
   nodeId: string;
@@ -37,45 +47,64 @@ export function SafeRestartModal({
   }
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="restart-modal-title">
-      <div className="modal-box">
-        <h2 id="restart-modal-title">重置单路信号通道</h2>
-        <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 12px" }}>
-          信号 <strong>{signalName}</strong> · 通道{" "}
-          <code className="mono">{channelId}</code>（服务器 {nodeName || nodeId}）。
-          仅断开并重建该路中转，其他信号不受影响。
-        </p>
+    <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <RotateCcw className="h-4 w-4 text-[#F87171]" />
+            重置单路信号通道
+          </DialogTitle>
+          <DialogDescription>
+            信号 <strong className="text-[#F1F3F6]">{signalName}</strong> · 通道{" "}
+            <code className="tabular rounded bg-[#1B1F27] px-1.5 py-0.5 text-[#E6E9EF]">
+              {channelId}
+            </code>
+            （服务器 {nodeName || nodeId}）。仅断开并重建该路中转，其他信号不受影响。
+          </DialogDescription>
+        </DialogHeader>
 
-        {error && <div className="notice notice-err">{error}</div>}
+        {error && (
+          <div className="mt-3 rounded-md border border-[#542228] bg-[#251316] px-3 py-2 text-[12px] text-[#F87171]">
+            {error}
+          </div>
+        )}
 
-        <div className="field">
-          <label htmlFor="confirm-channel-input">
-            为防误操作，请输入通道编号 <code className="mono">{channelId}</code> 确认
+        <div className="mt-4 space-y-2">
+          <label
+            htmlFor="confirm-channel-input"
+            className="block text-[12px] text-[#98A1B0]"
+          >
+            为防误操作，请输入通道编号{" "}
+            <code className="tabular text-[#F1F3F6]">{channelId}</code> 确认
           </label>
-          <input
+          <Input
             id="confirm-channel-input"
-            className="input mono"
+            className="tabular"
             value={confirmInput}
             onChange={(e) => setConfirmInput(e.target.value)}
             placeholder={channelId}
             autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && confirmInput.trim() === channelId && !busy) {
+                void handleConfirm();
+              }
+            }}
           />
         </div>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-          <button type="button" className="btn" onClick={onClose} disabled={busy}>
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
             取消
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger"
+          </Button>
+          <Button
+            variant="danger"
             disabled={busy || confirmInput.trim() !== channelId}
             onClick={handleConfirm}
           >
             {busy ? "重置中..." : "确认重置"}
-          </button>
+          </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

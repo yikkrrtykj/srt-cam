@@ -1,5 +1,8 @@
 import { FormEvent, useState } from "react";
-import { api } from "../api";
+import { Radio } from "lucide-react";
+import { api } from "@/api";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface Props {
   nodeName: string;
@@ -27,35 +30,43 @@ export function LoginPage({ nodeName, onLoggedIn }: Props) {
   }
 
   return (
-    <main className="login-wrap">
-      <div className="login-box">
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-          <span className="rail-logo">SRT</span>
+    <main className="min-h-screen flex items-center justify-center bg-[#0A0B0D] p-4">
+      <div className="w-full max-w-[360px] rounded-lg border border-[#232730] bg-[#111316] p-6">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[#2A2F3A] bg-[#181B22] text-[#F1F3F6]">
+            <Radio className="h-4.5 w-4.5" />
+          </div>
           <div>
-            <h1 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>SRT 信号网关</h1>
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{nodeName || "播控管理端"}</div>
+            <h1 className="text-[15px] font-semibold tracking-tight text-[#F1F3F6]">SRT-CAM</h1>
+            <div className="text-[12px] text-[#7C8596]">{nodeName || "广电信号播控台"}</div>
           </div>
         </div>
 
-        {error && <div className="notice notice-err">{error}</div>}
+        {error && (
+          <div className="mb-4 rounded-md border border-[#542228] bg-[#251316] px-3 py-2 text-[12px] text-[#F87171]">
+            {error}
+          </div>
+        )}
 
-        <form onSubmit={handleSubmit}>
-          <div className="field">
-            <label htmlFor="login-user">用户名</label>
-            <input
+        <form onSubmit={handleSubmit} className="space-y-3.5">
+          <div className="space-y-1.5">
+            <label htmlFor="login-user" className="block text-[12px] text-[#98A1B0]">
+              用户名
+            </label>
+            <Input
               id="login-user"
-              className="input"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
               required
             />
           </div>
-          <div className="field">
-            <label htmlFor="login-pass">密码</label>
-            <input
+          <div className="space-y-1.5">
+            <label htmlFor="login-pass" className="block text-[12px] text-[#98A1B0]">
+              密码
+            </label>
+            <Input
               id="login-pass"
-              className="input"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -63,14 +74,9 @@ export function LoginPage({ nodeName, onLoggedIn }: Props) {
               required
             />
           </div>
-          <button
-            type="submit"
-            className="btn btn-primary"
-            style={{ width: "100%", marginTop: 4, padding: "8px 12px" }}
-            disabled={busy}
-          >
-            {busy ? "登录中..." : "登录"}
-          </button>
+          <Button type="submit" variant="primary" size="default" className="w-full mt-1" disabled={busy}>
+            {busy ? "登录中..." : "进入播控台"}
+          </Button>
         </form>
       </div>
     </main>

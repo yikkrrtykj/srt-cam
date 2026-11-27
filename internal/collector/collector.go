@@ -45,6 +45,20 @@ func New(cfg config.NodeConfig) *Collector {
 	}
 }
 
+// UpdateThresholds hot-reloads diagnostic thresholds safely from the web alert settings page.
+func (c *Collector) UpdateThresholds(th config.ThresholdConfig) {
+	c.mu.Lock()
+	c.cfg.Thresholds = th
+	c.mu.Unlock()
+}
+
+func (c *Collector) currentThresholds() config.ThresholdConfig {
+	c.mu.Lock()
+	th := c.cfg.Thresholds
+	c.mu.Unlock()
+	return th
+}
+
 // RestartLocalChannel safely restarts a single local container by channel ID.
 func (c *Collector) RestartLocalChannel(ctx context.Context, channelID string) error {
 	if c.cfg.DemoMode {
@@ -201,7 +215,7 @@ func (c *Collector) CollectOnce(ctx context.Context, sheet config.EventSheet) (m
 			ExpectedActive: entry.grp.ExpectedActive,
 			PrevRestarts:   prevR,
 		}
-		code, layer, summary := diagnosis.DiagnoseChannel(sample, hostSample, cctx, c.cfg.Thresholds)
+		code, layer, summary := diagnosis.DiagnoseChannel(sample, hostSample, cctx, c.currentThresholds())
 		sample.FaultCode = code
 		sample.FaultLayer = layer
 		sample.FaultSummary = summary
@@ -587,7 +601,7 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 				ExpectedActive: grp.ExpectedActive,
 				PrevRestarts:   0,
 			}
-			code, layer, summary := diagnosis.DiagnoseChannel(s, hostSample, cctx, c.cfg.Thresholds)
+			code, layer, summary := diagnosis.DiagnoseChannel(s, hostSample, cctx, c.currentThresholds())
 			s.FaultCode = code
 			s.FaultLayer = layer
 			s.FaultSummary = summary

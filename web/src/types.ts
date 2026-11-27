@@ -219,3 +219,45 @@ export interface ChannelLogsResponse {
   total_lines: number;
   lines: LogLine[];
 }
+
+export interface FeishuConfigView {
+  enabled: boolean;
+  webhook_masked: string;
+  webhook_configured: boolean;
+  secret_configured: boolean;
+  debounce_sec: number;
+  cooldown_sec: number;
+  watchdog_sec: number;
+  dashboard_base_url: string;
+}
+
+export interface ThresholdConfig {
+  min_flow_mbps: number;
+  high_rtt_ms: number;
+  high_loss_per_sample: number;
+  high_retrans: number;
+  high_nak_lost: number;
+  udp_buf_drop_trigger: number;
+}
+
+export interface AlertConfigView {
+  feishu: FeishuConfigView;
+  thresholds: ThresholdConfig;
+  persistent: boolean;
+}
+
+export interface AlertConfigUpdate {
+  feishu: {
+    enabled: boolean;
+    webhook_url: string;
+    clear_webhook?: boolean;
+    secret: string;
+    clear_secret?: boolean;
+    debounce_sec: number;
+    cooldown_sec: number;
+    watchdog_sec: number;
+    dashboard_base_url: string;
+  };
+  thresholds: ThresholdConfig;
+}
+

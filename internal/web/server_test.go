@@ -153,5 +153,107 @@ func TestAPIAuthOverviewRestartAndEventSheet(t *testing.T) {
 	if recThumb.Code != http.StatusOK || recThumb.Header().Get("Content-Type") != "image/jpeg" {
 		t.Fatalf("thumbnail = (%d, %q), want (200, image/jpeg)", recThumb.Code, recThumb.Header().Get("Content-Type"))
 	}
+
+	// GET /api/v1/alerts/config returns sanitized initial defaults
+	reqAC := httptest.NewRequest(http.MethodGet, "/api/v1/alerts/config", nil)
+	reqAC.AddCookie(cookie)
+	recAC := httptest.NewRecorder()
+	handler.ServeHTTP(recAC, reqAC)
+	if recAC.Code != http.StatusOK {
+		t.Fatalf("GET alerts/config = %d %s", recAC.Code, recAC.Body.String())
+	}
+	var acView AlertConfigView
+	if err := json.Unmarshal(recAC.Body.Bytes(), &acView); err != nil {
+		t.Fatal(err)
+	}
+	if acView.Feishu.Enabled || acView.Feishu.WebhookConfigured {
+		t.Fatalf("unexpected initial alert config: %+v", acView)
+	}
+
+	// PUT /api/v1/alerts/config rejects enabling without webhook
+	badAC := bytes.NewBufferString(`{"feishu":{"enabled":true,"debounce_sec":10,"cooldown_sec":180,"watchdog_sec":20},"thresholds":{"min_flow_mbps":0.1,"high_rtt_ms":250}}`)
+	reqBadAC := httptest.NewRequest(http.MethodPut, "/api/v1/alerts/config", badAC)
+	reqBadAC.AddCookie(cookie)
+	recBadAC := httptest.NewRecorder()
+	handler.ServeHTTP(recBadAC, reqBadAC)
+	if recBadAC.Code != http.StatusBadRequest {
+		t.Fatalf("PUT alerts/config without webhook = %d, want 400", recBadAC.Code)
+	}
+
+	// Local mock Feishu webhook server verifies live hot-reload + secret masking
+	feishuHits := 0
+	mockFeishu := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		feishuHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockFeishu.Close()
+
+	var savedFeishu config.FeishuConfig
+	var savedTh config.ThresholdConfig
+	srv.SetAlertConfigCallback(true, func(f config.FeishuConfig, th config.ThresholdConfig) error {
+		savedFeishu = f
+		savedTh = th
+		return nil
+	})
+
+	putPayload := map[string]any{
+		"feishu": map[string]any{
+			"enabled":            true,
+			"webhook_url":        mockFeishu.URL + "/open-apis/bot/v2/hook/secret-token-123456",
+			"secret":             "my-sign-secret",
+			"debounce_sec":       12,
+			"cooldown_sec":       120,
+			"watchdog_sec":       25,
+			"dashboard_base_url": "https://cam.example.com/",
+		},
+		"thresholds": map[string]any{
+			"min_flow_mbps":        0.25,
+			"high_rtt_ms":          180,
+			"high_loss_per_sample": 15,
+			"high_retrans":         25,
+			"high_nak_lost":        15,
+			"udp_buf_drop_trigger": 5,
+		},
+	}
+	putBytes, _ := json.Marshal(putPayload)
+	reqPutAC := httptest.NewRequest(http.MethodPut, "/api/v1/alerts/config", bytes.NewReader(putBytes))
+	reqPutAC.AddCookie(cookie)
+	recPutAC := httptest.NewRecorder()
+	handler.ServeHTTP(recPutAC, reqPutAC)
+	if recPutAC.Code != http.StatusOK {
+		t.Fatalf("PUT alerts/config = %d %s", recPutAC.Code, recPutAC.Body.String())
+	}
+	var updatedView AlertConfigView
+	if err := json.Unmarshal(recPutAC.Body.Bytes(), &updatedView); err != nil {
+		t.Fatal(err)
+	}
+	if !updatedView.Feishu.Enabled || !updatedView.Feishu.WebhookConfigured || !updatedView.Feishu.SecretConfigured || !updatedView.Persistent {
+		t.Fatalf("unexpected updated view: %+v", updatedView)
+	}
+	if updatedView.Feishu.WebhookMasked != mockFeishu.URL+"/open-apis/bot/v2/hook/****123456" {
+		t.Fatalf("webhook masking mismatch: got %q", updatedView.Feishu.WebhookMasked)
+	}
+	if savedFeishu.DebounceSec != 12 || savedTh.HighRTTMs != 180 {
+		t.Fatalf("callback did not receive updated values: %+v %+v", savedFeishu, savedTh)
+	}
+
+	// Partial update omitting webhook_url & secret keeps existing secrets intact
+	partialBytes := bytes.NewBufferString(`{"feishu":{"enabled":true,"debounce_sec":15,"cooldown_sec":120,"watchdog_sec":25,"dashboard_base_url":"https://cam.example.com"},"thresholds":{"min_flow_mbps":0.25,"high_rtt_ms":200,"high_loss_per_sample":15,"high_retrans":25,"high_nak_lost":15,"udp_buf_drop_trigger":5}}`)
+	reqPartial := httptest.NewRequest(http.MethodPut, "/api/v1/alerts/config", partialBytes)
+	reqPartial.AddCookie(cookie)
+	recPartial := httptest.NewRecorder()
+	handler.ServeHTTP(recPartial, reqPartial)
+	if recPartial.Code != http.StatusOK || savedFeishu.Secret != "my-sign-secret" || savedFeishu.DebounceSec != 15 {
+		t.Fatalf("partial update broke secrets: code=%d feishu=%+v", recPartial.Code, savedFeishu)
+	}
+
+	// POST /api/v1/alerts/test now delivers to the newly saved webhook
+	reqTest := httptest.NewRequest(http.MethodPost, "/api/v1/alerts/test", nil)
+	reqTest.AddCookie(cookie)
+	recTest := httptest.NewRecorder()
+	handler.ServeHTTP(recTest, reqTest)
+	if recTest.Code != http.StatusOK || feishuHits != 1 {
+		t.Fatalf("POST alerts/test = %d (hits=%d) body=%s", recTest.Code, feishuHits, recTest.Body.String())
+	}
 }
 
