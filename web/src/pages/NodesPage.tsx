@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/clipboard";
 
 interface Props {
   nodes: NodeLiveStatus[];
@@ -104,12 +105,12 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
   }, []);
 
   async function copyText(key: string, label: string, text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyToClipboard(text);
+    if (ok) {
       setCopiedKey(key);
       toast.success(`已复制${label}`);
       window.setTimeout(() => setCopiedKey((cur) => (cur === key ? "" : cur)), 1600);
-    } catch {
+    } else {
       toast.error("复制失败");
     }
   }

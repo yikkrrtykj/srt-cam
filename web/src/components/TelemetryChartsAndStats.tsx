@@ -18,6 +18,7 @@ import {
   resolveNodeHost,
 } from "@/api";
 import { cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/clipboard";
 
 interface Props {
   group: SignalGroupLiveView;
@@ -447,12 +448,12 @@ export function TelemetryChartsAndStats({ group, nodes, legIdx, layout }: Props)
   const pullUrl = !isPass ? `srt://${hostAddr}:${activeLeg.out_port}` : "";
 
   async function copyUrl(key: string, label: string, text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyToClipboard(text);
+    if (ok) {
       setCopiedKey(key);
       toast.success(`已复制${label}`);
       window.setTimeout(() => setCopiedKey((cur) => (cur === key ? "" : cur)), 1500);
-    } catch {
+    } else {
       toast.error("复制失败，请手动复制");
     }
   }

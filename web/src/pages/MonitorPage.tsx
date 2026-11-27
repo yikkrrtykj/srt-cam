@@ -29,6 +29,7 @@ import { Switch } from "@/components/ui/switch";
 import { StatusBadge, TallyDot } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/clipboard";
 
 type ViewMode = "workbench" | "multiviewer";
 type SubTab = "realtime" | "diagnosis" | "logs";
@@ -201,12 +202,12 @@ export function MonitorPage({
   }
 
   async function copyAddress(key: string, label: string, text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyToClipboard(text);
+    if (ok) {
       setCopiedKey(key);
       toast.success(`已复制${label}`);
       window.setTimeout(() => setCopiedKey((c) => (c === key ? "" : c)), 1500);
-    } catch {
+    } else {
       toast.error("复制失败");
     }
   }
