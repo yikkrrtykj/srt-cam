@@ -263,6 +263,21 @@ func (m *Manager) captureOnce(ctx context.Context, t config.PreviewTarget) {
 		UpdatedAt:   now,
 	}
 	if meta.FPS > 0 || meta.Resolution != "" || meta.Codec != "" || meta.AudioSampleRate > 0 {
+		if prev, ok := m.metaCache[t.ChannelID]; ok && now.Sub(prev.UpdatedAt) <= 30*time.Second {
+			sameVideo := (meta.Resolution == "" || prev.Resolution == "" || meta.Resolution == prev.Resolution) &&
+				(meta.Codec == "" || prev.Codec == "" || meta.Codec == prev.Codec)
+			if sameVideo {
+				if meta.FPS <= 0 && prev.FPS > 0 {
+					meta.FPS = prev.FPS
+				}
+				if meta.Resolution == "" && prev.Resolution != "" {
+					meta.Resolution = prev.Resolution
+				}
+				if meta.Codec == "" && prev.Codec != "" {
+					meta.Codec = prev.Codec
+				}
+			}
+		}
 		meta.UpdatedAt = now
 		m.metaCache[t.ChannelID] = meta
 	}

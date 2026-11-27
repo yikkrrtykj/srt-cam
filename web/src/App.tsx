@@ -193,7 +193,7 @@ export function App() {
 
   const alertCount =
     overview?.groups.filter(
-      (g) => g.enabled && g.expected_active && g.severity !== "HEALTHY" && g.severity !== "IDLE" && g.severity !== "STOPPED"
+      (g) => g.enabled && g.severity !== "HEALTHY" && g.severity !== "IDLE" && g.severity !== "STOPPED"
     ).length ?? 0;
 
   const isTvWallMode = wallFullscreen && tab === "monitor";

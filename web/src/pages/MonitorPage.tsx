@@ -150,7 +150,6 @@ export function MonitorPage({
       overview.groups.filter(
         (g) =>
           g.enabled &&
-          g.expected_active &&
           g.severity !== "HEALTHY" &&
           g.severity !== "IDLE" &&
           g.severity !== "STOPPED"
@@ -173,7 +172,6 @@ export function MonitorPage({
         if (
           !(
             g.enabled &&
-            g.expected_active &&
             g.severity !== "HEALTHY" &&
             g.severity !== "IDLE" &&
             g.severity !== "STOPPED"

@@ -186,7 +186,21 @@ export function formatVideoFps(leg?: LegLiveView): {
     };
   }
   const fps = s.video_fps ?? 0;
+  const metaParts = [s.video_resolution, s.video_codec].filter(Boolean);
+  const metaText = metaParts.join(" · ");
   if (fps <= 0) {
+    if (metaText) {
+      const compactMeta = [compactResolution(s.video_resolution), s.video_codec]
+        .filter(Boolean)
+        .join(" · ");
+      return {
+        text: metaText,
+        fullText: metaText,
+        compactFullText: compactMeta || metaText,
+        metaText,
+        tooltip: metaText,
+      };
+    }
     return {
       text: "探测中",
       fullText: "探测中",
@@ -196,8 +210,6 @@ export function formatVideoFps(leg?: LegLiveView): {
     };
   }
   const fpsNum = Math.abs(fps - Math.round(fps)) < 0.05 ? String(Math.round(fps)) : fps.toFixed(2);
-  const metaParts = [s.video_resolution, s.video_codec].filter(Boolean);
-  const metaText = metaParts.join(" · ");
   const fullParts = [...metaParts, `${fpsNum} fps`];
   const compactParts = [compactResolution(s.video_resolution), s.video_codec, `${fpsNum}fps`].filter(Boolean);
   return {
@@ -449,8 +461,6 @@ export type BroadcastTone = "ok" | "warn" | "crit" | "idle";
 export function isGroupAwaitingDownstream(g: SignalGroupLiveView): boolean {
   return (
     g.enabled &&
-    g.expected_active &&
-    g.severity === "CRITICAL_OUTAGE" &&
     g.legs.length > 0 &&
     g.legs.every((l) => l.node_online && l.sample.fault_code === "DOWNSTREAM_OFFLINE")
   );
@@ -463,13 +473,19 @@ export function groupStatusMeta(g: SignalGroupLiveView): { label: string; tone: 
   if (isGroupAwaitingDownstream(g)) {
     return { label: "待拉流", tone: "warn" };
   }
+  if (
+    g.severity === "DEGRADED_SINGLE" &&
+    g.legs.some((l) => l.node_online && (l.sample.src_dropped > 0 || l.sample.dst_dropped > 0))
+  ) {
+    return { label: "严重丢包", tone: "crit" };
+  }
   return severityMeta(g.severity);
 }
 
 export function severityMeta(sev: string): { label: string; tone: BroadcastTone } {
   switch (sev) {
     case "HEALTHY":
-      return { label: "正常在播", tone: "ok" };
+      return { label: "正常", tone: "ok" };
     case "STOPPED":
       return { label: "已停止", tone: "idle" };
     case "DEGRADED_PROTECTED":
