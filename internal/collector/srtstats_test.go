@@ -64,6 +64,38 @@ func TestParseSRTLogsSinceDeduplicatesAndSums(t *testing.T) {
 	_ = t2
 }
 
+func TestParseSRTLogsExtendedMetricsAndReconnects(t *testing.T) {
+	t0 := time.Date(2026, 10, 22, 1, 40, 0, 0, time.UTC)
+	logs1 := "" +
+		"2026-10-22T01:40:00Z Accepted SRT source connection from 198.51.100.20:50001\n" +
+		`2026-10-22T01:40:02Z {"sid":101,"link":{"rtt":180,"bandwidth":120.5,"maxBandwidth":1000},"recv":{"packets":250,"packetsLost":2,"packetsRetransmitted":2,"packetsDropped":0,"packetsBelated":1,"bytes":340000,"msBuf":215.5,"msTsbPdDelay":1000,"mbitRate":2.8},"send":{"packets":0}}` + "\n"
+
+	first := ParseSRTLogsWithCursors(logs1, t0.Add(3*time.Second), 30*time.Second, ParseCursors{})
+	if first.SrcReconnects != 0 {
+		t.Fatalf("initial connect should not count as reconnect, got %d", first.SrcReconnects)
+	}
+	if first.SrcBelated != 1 || first.SrcBytes != 340000 || first.SrcBufMs != 215.5 || first.SrcMaxBWMbps != 1000 {
+		t.Fatalf("unexpected extended fields: %+v", first)
+	}
+
+	logs2 := logs1 +
+		"2026-10-22T01:40:04Z SRT source disconnected\n" +
+		"2026-10-22T01:40:06Z Accepted SRT source connection from 198.51.100.20:50002\n" +
+		`2026-10-22T01:40:08Z {"sid":102,"link":{"rtt":185,"bandwidth":118.0,"maxBandwidth":1000},"recv":{"packets":250,"packetsLost":0,"packetsRetransmitted":0,"packetsDropped":0,"packetsBelated":0,"bytes":338000,"msBuf":198.0,"msTsbPdDelay":1000,"mbitRate":2.9},"send":{"packets":0}}` + "\n"
+
+	cur := ParseCursors{
+		SrcStatsTS: first.SrcLastTS,
+		SrcConnTS:  first.SrcConnLastTS,
+	}
+	second := ParseSRTLogsWithCursors(logs2, t0.Add(9*time.Second), 30*time.Second, cur)
+	if second.SrcReconnects != 1 {
+		t.Fatalf("expected 1 reconnect after disconnect+accept, got %d", second.SrcReconnects)
+	}
+	if second.SrcBytes != 338000 || second.SrcBufMs != 198.0 {
+		t.Fatalf("unexpected second poll metrics: %+v", second)
+	}
+}
+
 func TestDemuxDockerStream(t *testing.T) {
 	line := []byte("2026-10-22T01:40:01Z hello\n")
 	frame := make([]byte, 8+len(line))

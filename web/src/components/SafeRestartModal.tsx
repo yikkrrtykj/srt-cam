@@ -27,10 +27,10 @@ export function SafeRestartModal({
     setError("");
     try {
       await api.restartChannel(nodeId, channelId, confirmInput.trim());
-      onSuccess(`已重启 ${nodeId}/${channelId}`);
+      onSuccess(`已重置通道 ${signalName} (${channelId})`);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "重启失败");
+      setError(err instanceof Error ? err.message : "重置失败");
     } finally {
       setBusy(false);
     }
@@ -39,17 +39,18 @@ export function SafeRestartModal({
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="restart-modal-title">
       <div className="modal-box">
-        <h2 id="restart-modal-title">重启单路容器</h2>
+        <h2 id="restart-modal-title">重置单路信号通道</h2>
         <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 12px" }}>
-          路由 <strong>{signalName}</strong> · 目标容器{" "}
-          <code className="mono">{nodeId} / {channelId}</code>（{nodeName}）。仅重启该容器，其余通道不受影响。
+          信号 <strong>{signalName}</strong> · 通道{" "}
+          <code className="mono">{channelId}</code>（服务器 {nodeName || nodeId}）。
+          仅断开并重建该路中转，其他信号不受影响。
         </p>
 
         {error && <div className="notice notice-err">{error}</div>}
 
         <div className="field">
           <label htmlFor="confirm-channel-input">
-            输入容器名 <code className="mono">{channelId}</code> 确认
+            为防误操作，请输入通道编号 <code className="mono">{channelId}</code> 确认
           </label>
           <input
             id="confirm-channel-input"
@@ -71,7 +72,7 @@ export function SafeRestartModal({
             disabled={busy || confirmInput.trim() !== channelId}
             onClick={handleConfirm}
           >
-            {busy ? "重启中..." : "确认重启"}
+            {busy ? "重置中..." : "确认重置"}
           </button>
         </div>
       </div>

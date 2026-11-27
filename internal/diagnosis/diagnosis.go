@@ -40,20 +40,20 @@ func DiagnoseChannel(
 		tag = cctx.Carrier + " · "
 	}
 
-	// 1. Layer 2: Cloud process / container health
+	// 1. Layer 2: Cloud process / channel health
 	if sample.ProcessState != "running" {
 		return model.FaultCloudProcessDown, "cloud",
-			fmt.Sprintf("%s进程异常 (%s / 重启 %d) · %s/%s",
+			fmt.Sprintf("%s中转通道未运行 (%s / 重启 %d 次) · %s/%s",
 				tag, sample.ProcessState, sample.RestartCount, sample.NodeID, sample.ChannelID)
 	}
 	if cctx.PrevRestarts >= 0 && sample.RestartCount > cctx.PrevRestarts {
 		return model.FaultCloudProcessDown, "cloud",
-			fmt.Sprintf("%s容器重启 (%d→%d) · %s/%s",
+			fmt.Sprintf("%s中转通道发生重启 (%d→%d 次) · %s/%s",
 				tag, cctx.PrevRestarts, sample.RestartCount, sample.NodeID, sample.ChannelID)
 	}
 	if th.UDPBufDropTrigger > 0 && host.UDPRcvbufErrors >= th.UDPBufDropTrigger {
 		return model.FaultCloudUDPBufDrop, "cloud",
-			fmt.Sprintf("%s宿主 UDP 缓冲丢包 (+%d) · %s",
+			fmt.Sprintf("%s中转服务器收包缓冲丢包 (+%d) · %s",
 				tag, host.UDPRcvbufErrors, sample.NodeID)
 	}
 
@@ -69,25 +69,25 @@ func DiagnoseChannel(
 				return model.FaultIdleExpectedOff, "none", "待机"
 			}
 			return model.FaultUpstreamOffline, "upstream",
-				fmt.Sprintf("%s入站无流 (0.00 Mb/s) · 透传正常 (0 重启) · 查 %s", tag, srcName)
+				fmt.Sprintf("%s推流端无信号 (0.00 Mb/s) · 中转正常 · 请检查 %s", tag, srcName)
 		}
 		if sample.SrcDropped > 0 {
 			return model.FaultDownstreamDegraded, "downstream",
-				fmt.Sprintf("%s未恢复弃包 (DropReq %d) · %.2f Mb/s · 重传 %d / NAK %d",
+				fmt.Sprintf("%s出现未恢复弃包 (%d 包) · %.2f Mb/s · 重传 %d / 请求重发 %d",
 					tag, sample.SrcDropped, sample.SrcMbps, sample.SrcRetrans, sample.DstNAKCount)
 		}
 		if sample.DstNAKCount >= th.HighNAKLost || sample.SrcRetrans >= th.HighRetrans {
 			return model.FaultDownstreamDegraded, "downstream",
-				fmt.Sprintf("%s链路抖动 · %.2f Mb/s · 重传 %d / NAK %d",
+				fmt.Sprintf("%s链路波动 · %.2f Mb/s · 重传 %d / 请求重发 %d",
 					tag, sample.SrcMbps, sample.SrcRetrans, sample.DstNAKCount)
 		}
 		if strings.Contains(sample.PathMedium, "LO") {
 			return model.FaultTunnelLOWarning, "tunnel",
-				fmt.Sprintf("%sLO 代理 · %.2f Mb/s（SRT 统计不反映底层 TCP 抖动）", tag, sample.SrcMbps)
+				fmt.Sprintf("%s经本机隧道转发 · %.2f Mb/s（统计不反映外层隧道抖动）", tag, sample.SrcMbps)
 		}
 		return model.FaultHealthy, "none",
-			fmt.Sprintf("%s正常 · %.2f Mb/s · 重传 %d / NAK %d / 弃包 0",
-				tag, sample.SrcMbps, sample.SrcRetrans, sample.DstNAKCount)
+			fmt.Sprintf("%s正常在播 · %.2f Mb/s · 重传 %d / 弃包 0",
+				tag, sample.SrcMbps, sample.SrcRetrans)
 	}
 
 	// 3. Mode A (Dual-Caller SRT Relay)
@@ -97,10 +97,10 @@ func DiagnoseChannel(
 		}
 		if !sample.SrcConnected && !sample.DstConnected {
 			return model.FaultUpstreamOffline, "upstream",
-				fmt.Sprintf("%s无连接 · 容器正常 (0 重启) · 查 %s", tag, srcName)
+				fmt.Sprintf("%s未建立推流连接 · 中转正常 · 请检查 %s", tag, srcName)
 		}
 		return model.FaultNoNativeStats, "none",
-			fmt.Sprintf("%s容器在线 · 未启用原生 SRT 统计（不代表零丢包）", tag)
+			fmt.Sprintf("%s通道已连接 · 暂未收到原生 SRT 统计", tag)
 	}
 
 	upFlow := sample.SrcMbps >= minFlow
@@ -111,18 +111,18 @@ func DiagnoseChannel(
 			return model.FaultIdleExpectedOff, "none", "待机"
 		}
 		return model.FaultUpstreamOffline, "upstream",
-			fmt.Sprintf("%s入站无流 (0.00 Mb/s) · 中转正常 (0 重启) · 查 %s", tag, srcName)
+			fmt.Sprintf("%s推流端无信号 (0.00 Mb/s) · 中转正常 · 请检查 %s", tag, srcName)
 	}
 
 	if upFlow && !downFlow {
 		return model.FaultDownstreamOffline, "downstream",
-			fmt.Sprintf("%s出站无流 · 入站 %.2f Mb/s (%.0fms) 正常 · 查 %s",
+			fmt.Sprintf("%s等待拉流连接 · 推流 %.2f Mb/s (时延 %.0fms) 正常 · 请检查 %s",
 				tag, sample.SrcMbps, sample.SrcRTTMs, dstName)
 	}
 
 	if !upFlow && downFlow {
 		return model.FaultUpstreamOffline, "upstream",
-			fmt.Sprintf("%s入站中断 (%.2f Mb/s) · 中转正常 (0 重启) · 查 %s",
+			fmt.Sprintf("%s推流端中断 (%.2f Mb/s) · 中转正常 · 请检查 %s",
 				tag, sample.SrcMbps, srcName)
 	}
 
@@ -142,32 +142,32 @@ func DiagnoseChannel(
 		if upBufferExhausted && sample.SrcDropped == 0 && sample.SrcRTTMs < th.HighRTTMs &&
 			sample.SrcLost < th.HighLossPerSample && sample.SrcRetrans < th.HighRetrans {
 			return model.FaultUpstreamDegraded, "upstream",
-				fmt.Sprintf("%s上行缓冲余量不足 · 4×RTT %.0fms > TSBPD %.0fms · 下游正常",
+				fmt.Sprintf("%s推流段缓冲余量不足（4×RTT %.0fms 超过设定缓冲 %.0fms）· 拉流段正常",
 					tag, sample.SrcRTTMs*4, sample.SrcTSBPDMs)
 		}
 		return model.FaultUpstreamDegraded, "upstream",
-			fmt.Sprintf("%s上行抖动 · RTT %.0fms / 丢包 %d / 重传 %d / 丢弃 %d · 下游正常",
+			fmt.Sprintf("%s推流段波动 · 时延 %.0fms / 丢包 %d / 重传 %d / 弃包 %d · 拉流段正常",
 				tag, sample.SrcRTTMs, sample.SrcLost, sample.SrcRetrans, sample.SrcDropped)
 	}
 	if downDegraded && !upDegraded {
 		return model.FaultDownstreamDegraded, "downstream",
-			fmt.Sprintf("%s下行抖动 · RTT %.0fms / 丢包 %d / 重传 %d / 丢弃 %d · 上游正常",
+			fmt.Sprintf("%s拉流段波动 · 时延 %.0fms / 丢包 %d / 重传 %d / 弃包 %d · 推流段正常",
 				tag, sample.DstRTTMs, sample.DstLost, sample.DstRetrans, sample.DstDropped)
 	}
 	if upDegraded && downDegraded {
 		return model.FaultUpstreamDegraded, "upstream",
-			fmt.Sprintf("%s双段抖动 · 上 RTT %.0fms(弃%d) / 下 RTT %.0fms(弃%d)",
+			fmt.Sprintf("%s推流与拉流均波动 · 推流 %.0fms(弃%d) / 拉流 %.0fms(弃%d)",
 				tag, sample.SrcRTTMs, sample.SrcDropped, sample.DstRTTMs, sample.DstDropped)
 	}
 
 	if strings.Contains(sample.PathMedium, "LO") {
 		return model.FaultTunnelLOWarning, "tunnel",
-			fmt.Sprintf("%sLO 代理 · 入 %.2f / 出 %.2f Mb/s（底层 TCP 可能掩盖丢包）",
+			fmt.Sprintf("%s经本机隧道转发 · 入 %.2f / 出 %.2f Mb/s（外层隧道可能掩盖丢包）",
 				tag, sample.SrcMbps, sample.DstMbps)
 	}
 
 	return model.FaultHealthy, "none",
-		fmt.Sprintf("%s正常 · 入 %.2f / 出 %.2f Mb/s · RTT %.0f/%.0f ms",
+		fmt.Sprintf("%s正常在播 · 推流 %.2f / 拉流 %.2f Mb/s · 时延 %.0f/%.0f ms",
 			tag, sample.SrcMbps, sample.DstMbps, sample.SrcRTTMs, sample.DstRTTMs)
 }
 

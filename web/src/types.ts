@@ -23,8 +23,13 @@ export interface ChannelSample {
   src_lost: number;
   src_retrans: number;
   src_dropped: number;
+  src_belated?: number;
+  src_bytes?: number;
+  src_buf_ms?: number;
   src_tsbpd_ms: number;
   src_link_bw_mbps?: number;
+  src_max_bw_mbps?: number;
+  src_reconnects?: number;
   src_peer_ip: string;
   dst_connected: boolean;
   dst_mbps: number;
@@ -34,7 +39,11 @@ export interface ChannelSample {
   dst_retrans: number;
   dst_dropped: number;
   dst_nak_count: number;
+  dst_bytes?: number;
+  dst_buf_ms?: number;
   dst_link_bw_mbps?: number;
+  dst_max_bw_mbps?: number;
+  dst_reconnects?: number;
   dst_peer_ip: string;
   path_medium: string;
   has_native_stats: boolean;

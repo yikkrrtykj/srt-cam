@@ -96,28 +96,66 @@ export function formatUptime(sec: number): string {
   return `${mins}分`;
 }
 
+export function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return "-";
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
+
+export function formatPct(part: number, total: number): string {
+  if (!total || total <= 0 || !part || part <= 0) return "0.00%";
+  const pct = (part / total) * 100;
+  return pct >= 10 ? `${pct.toFixed(1)}%` : `${pct.toFixed(2)}%`;
+}
+
+export function resolveNodeHost(nodes: { node_id: string; public_ip: string }[], nodeId: string): string {
+  const found = nodes.find((n) => n.node_id === nodeId);
+  if (found?.public_ip) return found.public_ip;
+  if (typeof window !== "undefined" && window.location.hostname) {
+    return window.location.hostname;
+  }
+  return "<服务器IP>";
+}
+
+export function auditActionText(action: string): string {
+  switch (action) {
+    case "restart_channel":
+      return "重置信号通道";
+    case "update_event_sheet":
+      return "保存通道配置";
+    case "toggle_expected_active":
+      return "切换告警监控";
+    case "test_feishu":
+      return "测试飞书通知";
+    default:
+      return action;
+  }
+}
+
 export function severityText(sev: string): { label: string; cls: string; dot: string } {
   switch (sev) {
     case "HEALTHY":
-      return { label: "ON AIR", cls: "pill-ok", dot: "dot-ok" };
+      return { label: "正常在播", cls: "pill-ok", dot: "dot-ok" };
     case "DEGRADED_PROTECTED":
-      return { label: "BACKUP", cls: "pill-warn", dot: "dot-warn" };
+      return { label: "备路接管", cls: "pill-warn", dot: "dot-warn" };
     case "DEGRADED_SINGLE":
-      return { label: "DEGRADED", cls: "pill-warn", dot: "dot-warn" };
+      return { label: "信号波动", cls: "pill-warn", dot: "dot-warn" };
     case "CRITICAL_OUTAGE":
-      return { label: "OFFLINE", cls: "pill-crit", dot: "dot-crit" };
+      return { label: "信号中断", cls: "pill-crit", dot: "dot-crit" };
     default:
-      return { label: "STANDBY", cls: "pill-idle", dot: "dot-idle" };
+      return { label: "待机", cls: "pill-idle", dot: "dot-idle" };
   }
 }
 
 export function redundancyText(t: string): string {
   switch (t) {
     case "makito_bonding":
-      return "Path Redundancy";
+      return "单机双路无缝";
     case "dual_hardware":
       return "双机热备";
     default:
-      return "单路";
+      return "单路传输";
   }
 }

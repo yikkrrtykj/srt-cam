@@ -191,7 +191,7 @@ export function App() {
             >
               <span className="rail-item-left">
                 <NavIcon kind="overview" />
-                <span>路由总览</span>
+                <span>信号总览</span>
               </span>
               {alertCount > 0 && <span className="pill pill-warn">{alertCount}</span>}
             </button>
@@ -203,7 +203,7 @@ export function App() {
             >
               <span className="rail-item-left">
                 <NavIcon kind="timeline" />
-                <span>链路详情</span>
+                <span>信号详情</span>
               </span>
             </button>
 
@@ -214,7 +214,7 @@ export function App() {
             >
               <span className="rail-item-left">
                 <NavIcon kind="sheet" />
-                <span>路由配置</span>
+                <span>通道配置</span>
               </span>
             </button>
 
@@ -225,7 +225,7 @@ export function App() {
             >
               <span className="rail-item-left">
                 <NavIcon kind="nodes" />
-                <span>节点与日志</span>
+                <span>服务器与记录</span>
               </span>
             </button>
           </nav>
@@ -242,40 +242,40 @@ export function App() {
           <header className="topbar">
             <div className="breadcrumb">
               <button type="button" className="breadcrumb-link" onClick={() => navigate("overview")}>
-                SRT Gateway
+                SRT 信号网关
               </button>
               <span>/</span>
-              {tab === "overview" && <span className="breadcrumb-current">路由总览</span>}
+              {tab === "overview" && <span className="breadcrumb-current">信号总览</span>}
               {tab === "timeline" && (
                 <>
                   <button type="button" className="breadcrumb-link" onClick={() => navigate("overview")}>
-                    路由总览
+                    信号总览
                   </button>
                   <span>/</span>
-                  <span className="breadcrumb-current">{activeRoute?.name || "链路详情"}</span>
+                  <span className="breadcrumb-current">{activeRoute?.name || "信号详情"}</span>
                 </>
               )}
-              {tab === "sheet" && <span className="breadcrumb-current">路由配置</span>}
-              {tab === "nodes" && <span className="breadcrumb-current">节点与日志</span>}
+              {tab === "sheet" && <span className="breadcrumb-current">通道配置</span>}
+              {tab === "nodes" && <span className="breadcrumb-current">服务器与记录</span>}
               {overview?.event_name && (
                 <span className="pill pill-idle" style={{ marginLeft: 6 }}>
                   {overview.event_name}
                 </span>
               )}
-              {overview?.demo_mode && <span className="pill pill-accent">DEMO</span>}
+              {overview?.demo_mode && <span className="pill pill-accent">演示模式</span>}
             </div>
 
             <div className="topbar-right">
               <span className={`pill ${sseLive ? "pill-ok" : "pill-warn"}`}>
                 <span className={`dot ${sseLive ? "dot-ok" : "dot-warn"}`} />
-                {sseLive ? "LIVE" : "RECONNECT"}
+                {sseLive ? "实时在线" : "重连中"}
               </span>
               <button
                 type="button"
                 className="btn btn-xs"
                 onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
               >
-                {theme === "dark" ? "浅色" : "深色 MCR"}
+                {theme === "dark" ? "浅色" : "深色播控"}
               </button>
               {auth.auth_enabled && (
                 <button type="button" className="btn btn-xs" onClick={handleLogout}>
@@ -288,7 +288,7 @@ export function App() {
 
         <main className="content">
           {!overview ? (
-            <div className="panel" style={{ padding: 16 }}>正在同步节点状态...</div>
+            <div className="panel" style={{ padding: 16 }}>正在连接中转服务器...</div>
           ) : tab === "overview" ? (
             <OverviewPage
               overview={overview}
@@ -307,7 +307,7 @@ export function App() {
               theme={theme}
             />
           ) : tab === "sheet" ? (
-            <EventSheetPage onSaved={() => void loadOverview()} />
+            <EventSheetPage nodes={overview.nodes} onSaved={() => void loadOverview()} />
           ) : (
             <NodesPage nodes={overview.nodes} />
           )}

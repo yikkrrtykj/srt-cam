@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AuditEntry, NodeLiveStatus } from "../types";
-import { api, formatDateTime, formatTime } from "../api";
+import { api, auditActionText, formatDateTime, formatTime } from "../api";
 
 interface Props {
   nodes: NodeLiveStatus[];
@@ -20,19 +20,19 @@ export function NodesPage({ nodes }: Props) {
     <div>
       <section className="panel">
         <div className="panel-head">
-          <span className="panel-title">中转节点 ({nodes.length})</span>
+          <span className="panel-title">中转服务器 ({nodes.length})</span>
         </div>
         <div style={{ overflowX: "auto" }}>
           <table className="gw-table">
             <thead>
               <tr>
-                <th>节点</th>
-                <th>区域 / IP</th>
-                <th>状态</th>
+                <th>服务器</th>
+                <th>机房 / 公网 IP</th>
+                <th>在线状态</th>
                 <th>CPU / 内存</th>
-                <th>网卡吞吐 (Rx / Tx)</th>
-                <th>UDP 丢包 (Rcvbuf / In)</th>
-                <th>最近同步</th>
+                <th>实时带宽 (收 / 发)</th>
+                <th>系统收包丢包</th>
+                <th>最近刷新</th>
               </tr>
             </thead>
             <tbody>
@@ -49,7 +49,7 @@ export function NodesPage({ nodes }: Props) {
                   <td>
                     <span className={`pill ${n.online ? "pill-ok" : "pill-crit"}`}>
                       <span className={`dot ${n.online ? "dot-ok" : "dot-crit"}`} />
-                      {n.online ? "ONLINE" : n.error || "OFFLINE"}
+                      {n.online ? "在线" : n.error || "离线"}
                     </span>
                   </td>
                   <td className="mono">
@@ -73,21 +73,21 @@ export function NodesPage({ nodes }: Props) {
 
       <section className="panel">
         <div className="panel-head">
-          <span className="panel-title">操作日志 ({audits.length})</span>
+          <span className="panel-title">播控操作记录 ({audits.length})</span>
         </div>
         {audits.length === 0 ? (
-          <div style={{ padding: 14, color: "var(--text-muted)", fontSize: 12 }}>暂无记录</div>
+          <div style={{ padding: 14, color: "var(--text-muted)", fontSize: 12 }}>暂无操作记录</div>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table className="gw-table">
               <thead>
                 <tr>
                   <th>时间</th>
-                  <th>操作人</th>
-                  <th>节点</th>
-                  <th>动作</th>
-                  <th>目标</th>
-                  <th>详情</th>
+                  <th>操作员</th>
+                  <th>服务器</th>
+                  <th>操作类型</th>
+                  <th>目标通道</th>
+                  <th>说明</th>
                 </tr>
               </thead>
               <tbody>
@@ -97,7 +97,7 @@ export function NodesPage({ nodes }: Props) {
                     <td>{a.username}</td>
                     <td className="mono">{a.node_id}</td>
                     <td>
-                      <span className="pill pill-idle">{a.action}</span>
+                      <span className="pill pill-idle">{auditActionText(a.action)}</span>
                     </td>
                     <td className="mono">{a.target}</td>
                     <td>{a.detail}</td>

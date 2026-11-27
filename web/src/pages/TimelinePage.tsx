@@ -19,14 +19,29 @@ interface Props {
 type DetailTab = "timeline" | "endpoints" | "events" | "logs";
 
 const PRESETS = [
-  { label: "5m", sec: 5 * 60 },
-  { label: "15m", sec: 15 * 60 },
-  { label: "30m", sec: 30 * 60 },
-  { label: "2h", sec: 2 * 3600 },
-  { label: "6h", sec: 6 * 3600 },
-  { label: "24h", sec: 24 * 3600 },
-  { label: "7d", sec: 7 * 86400 },
+  { label: "5分钟", sec: 5 * 60 },
+  { label: "15分钟", sec: 15 * 60 },
+  { label: "30分钟", sec: 30 * 60 },
+  { label: "2小时", sec: 2 * 3600 },
+  { label: "6小时", sec: 6 * 3600 },
+  { label: "24小时", sec: 24 * 3600 },
+  { label: "7天", sec: 7 * 86400 },
 ];
+
+function faultLayerLabel(layer: string): string {
+  switch (layer) {
+    case "upstream":
+      return "推流段";
+    case "downstream":
+      return "拉流段";
+    case "cloud":
+      return "中转服务器";
+    case "tunnel":
+      return "转发隧道";
+    default:
+      return "整路";
+  }
+}
 
 export function TimelinePage({
   groups,
@@ -184,13 +199,13 @@ export function TimelinePage({
         <div className="toolbar-row">
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
             <button type="button" className="btn" onClick={onBack}>
-              ← 路由列表
+              ← 返回信号总览
             </button>
             <select
               className="select"
               value={activeId}
               onChange={(e) => onSelectGroup(e.target.value)}
-              aria-label="切换路由"
+              aria-label="切换信号"
             >
               {groups.map((g) => (
                 <option key={g.id} value={g.id}>
@@ -214,7 +229,7 @@ export function TimelinePage({
               {loading ? "加载中..." : "刷新"}
             </button>
             <button type="button" className="btn" onClick={handleExportPNG} disabled={!data || detailTab !== "timeline"}>
-              导出 PNG
+              导出截图报告
             </button>
             <button
               type="button"
@@ -225,7 +240,7 @@ export function TimelinePage({
               }}
               disabled={!data}
             >
-              快照视图
+              全屏快照
             </button>
           </div>
         </div>
@@ -239,10 +254,10 @@ export function TimelinePage({
             borderRadius: "var(--radius-md)",
           }}
         >
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>快照视图</span>
+          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>全屏快照模式</span>
           <div style={{ display: "flex", gap: 8 }}>
             <button type="button" className="btn btn-xs" onClick={handleExportPNG}>
-              导出 PNG
+              导出截图报告
             </button>
             <button type="button" className="btn btn-xs btn-primary" onClick={() => onToggleCleanView(false)}>
               退出快照
@@ -256,7 +271,7 @@ export function TimelinePage({
 
       {data && (
         <>
-          {/* Haivision SRT Gateway / Makito X4 Single-Signal Health Panel */}
+          {/* Single-Signal Health Panel */}
           <section className="panel">
             <div className="panel-head">
               <div className="panel-title">
@@ -304,7 +319,7 @@ export function TimelinePage({
                 className={`tab-btn ${detailTab === "timeline" ? "active" : ""}`}
                 onClick={() => setDetailTab("timeline")}
               >
-                趋势监控
+                历史趋势
               </button>
               <button
                 type="button"
@@ -318,14 +333,14 @@ export function TimelinePage({
                 className={`tab-btn ${detailTab === "events" ? "active" : ""}`}
                 onClick={() => setDetailTab("events")}
               >
-                事件日志 ({data.events.length})
+                异常记录 ({data.events.length})
               </button>
               <button
                 type="button"
                 className={`tab-btn ${detailTab === "logs" ? "active" : ""}`}
                 onClick={() => setDetailTab("logs")}
               >
-                原始日志
+                通信记录
               </button>
             </div>
           )}
@@ -398,14 +413,14 @@ export function TimelinePage({
                 <table className="gw-table">
                   <thead>
                     <tr>
-                      <th>角色 / 运营商</th>
-                      <th>节点 / 容器</th>
-                      <th>模式 / 端口</th>
-                      <th>入 / 出码率</th>
-                      <th>上 / 下 RTT</th>
-                      <th>丢包 · 重传 · 丢弃 · NAK</th>
-                      <th>TSBPD / 路径</th>
-                      <th>进程 / 运行时长</th>
+                      <th>主备 / 线路</th>
+                      <th>服务器 / 通道号</th>
+                      <th>传输模式 / 端口</th>
+                      <th>推流 / 拉流码率</th>
+                      <th>推流 / 拉流时延</th>
+                      <th>丢包 · 重传 · 弃包</th>
+                      <th>设定缓冲 / 路径</th>
+                      <th>运行状态 / 时长</th>
                       <th style={{ textAlign: "right" }}>操作</th>
                     </tr>
                   </thead>
@@ -425,8 +440,8 @@ export function TimelinePage({
                           </td>
                           <td className="mono">
                             {leg.mode === "udp-passthrough"
-                              ? `UDP :${leg.in_port} → ${leg.target_addr || ":" + leg.out_port}`
-                              : `SRT :${leg.in_port} → :${leg.out_port}`}
+                              ? `透传 :${leg.in_port} → ${leg.target_addr || ":" + leg.out_port}`
+                              : `中转 :${leg.in_port} → :${leg.out_port}`}
                           </td>
                           <td className="mono">
                             {s.src_mbps.toFixed(2)} / {s.dst_mbps.toFixed(2)} Mb/s
@@ -438,8 +453,8 @@ export function TimelinePage({
                           </td>
                           <td className="mono">
                             {leg.mode === "udp-passthrough"
-                              ? `重传 ${s.src_retrans} · NAK ${s.dst_nak_count} · DropReq ${s.src_dropped}`
-                              : `上 ${s.src_lost}/${s.src_retrans}/${s.src_dropped} · 下 ${s.dst_lost}/${s.dst_retrans}/${s.dst_dropped}`}
+                              ? `重传 ${s.src_retrans} · 请求重发 ${s.dst_nak_count} · 弃包 ${s.src_dropped}`
+                              : `推 ${s.src_lost}/${s.src_retrans}/${s.src_dropped} · 拉 ${s.dst_lost}/${s.dst_retrans}/${s.dst_dropped}`}
                           </td>
                           <td className="mono">
                             {s.src_tsbpd_ms > 0 ? `${s.src_tsbpd_ms.toFixed(0)}ms` : "-"} ·{" "}
@@ -448,7 +463,7 @@ export function TimelinePage({
                             </span>
                           </td>
                           <td className="mono">
-                            {s.process_state} · 重启 {s.restart_count} · {formatUptime(s.uptime_sec)}
+                            {s.process_state === "running" ? "运行中" : s.process_state} · 重启 {s.restart_count} · {formatUptime(s.uptime_sec)}
                           </td>
                           <td style={{ textAlign: "right" }}>
                             <button
@@ -463,7 +478,7 @@ export function TimelinePage({
                                 })
                               }
                             >
-                              单路重启
+                              重置通道
                             </button>
                           </td>
                         </tr>
@@ -478,21 +493,21 @@ export function TimelinePage({
           {(detailTab === "events" || cleanView) && (
             <section className="panel" style={{ marginTop: cleanView ? 12 : 0 }}>
               <div className="panel-head">
-                <span className="panel-title">事件记录 ({data.events.length})</span>
+                <span className="panel-title">异常记录 ({data.events.length})</span>
               </div>
               {data.events.length === 0 ? (
-                <div style={{ padding: 14, color: "var(--text-muted)", fontSize: 12 }}>当前时间窗无异常事件</div>
+                <div style={{ padding: 14, color: "var(--text-muted)", fontSize: 12 }}>当前时间范围内无异常记录</div>
               ) : (
                 <div style={{ overflowX: "auto" }}>
                   <table className="gw-table">
                     <thead>
                       <tr>
-                        <th>开始时间</th>
+                        <th>发生时间</th>
                         <th>恢复时间</th>
-                        <th>节点 / 通道</th>
-                        <th>状态</th>
+                        <th>服务器 / 通道</th>
+                        <th>级别</th>
                         <th>区段</th>
-                        <th>详情</th>
+                        <th>异常说明</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -508,7 +523,7 @@ export function TimelinePage({
                             <td>
                               <span className={`pill ${evSev.cls}`}>{evSev.label}</span>
                             </td>
-                            <td className="mono">{ev.fault_layer}</td>
+                            <td>{faultLayerLabel(ev.fault_layer)}</td>
                             <td>{ev.summary}</td>
                           </tr>
                         );
@@ -538,13 +553,13 @@ export function TimelinePage({
                     ))}
                   </div>
 
-                  <label className="switch" title="隐藏高频 JSON 统计行，聚焦握手、断连和丢包日志">
+                  <label className="switch" title="仅显示连接、断线与丢包事件，隐藏高频周期统计">
                     <input
                       type="checkbox"
                       checked={hideStats}
                       onChange={(e) => setHideStats(e.target.checked)}
                     />
-                    隐藏 JSON 统计行
+                    仅看连接与异常
                   </label>
 
                   <select
@@ -553,15 +568,15 @@ export function TimelinePage({
                     onChange={(e) => setLogTail(Number(e.target.value))}
                     aria-label="行数"
                   >
-                    <option value={100}>最近 100 行</option>
-                    <option value={300}>最近 300 行</option>
-                    <option value={800}>最近 800 行</option>
+                    <option value={100}>最近 100 条</option>
+                    <option value={300}>最近 300 条</option>
+                    <option value={800}>最近 800 条</option>
                   </select>
 
                   <input
                     className="input"
-                    style={{ width: 170 }}
-                    placeholder="过滤关键字 (如 DROPPED)"
+                    style={{ width: 185 }}
+                    placeholder="搜索关键字（如断线、DROPPED）"
                     value={logKeyword}
                     onChange={(e) => setLogKeyword(e.target.value)}
                   />
@@ -577,7 +592,7 @@ export function TimelinePage({
                     复制
                   </button>
                   <button type="button" className="btn btn-xs btn-primary" onClick={() => void loadLogs()} disabled={logLoading}>
-                    {logLoading ? "读取中..." : "刷新日志"}
+                    {logLoading ? "读取中..." : "刷新记录"}
                   </button>
                 </div>
               </div>
@@ -590,10 +605,10 @@ export function TimelinePage({
 
               <div className="log-viewer">
                 {logLoading && !logData ? (
-                  <div style={{ padding: 16, color: "var(--text-muted)" }}>正在读取容器日志...</div>
+                  <div style={{ padding: 16, color: "var(--text-muted)" }}>正在读取通信记录...</div>
                 ) : filteredLogs.length === 0 ? (
                   <div style={{ padding: 16, color: "var(--text-muted)" }}>
-                    当前无匹配日志（可取消勾选“隐藏 JSON 统计行”查看原始统计输出）
+                    当前无匹配记录（可取消勾选“仅看连接与异常”查看全部底层统计）
                   </div>
                 ) : (
                   filteredLogs.map((line, i) => (

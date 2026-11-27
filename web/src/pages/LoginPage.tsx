@@ -32,8 +32,8 @@ export function LoginPage({ nodeName, onLoggedIn }: Props) {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
           <span className="rail-logo">SRT</span>
           <div>
-            <h1 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>SRT-CAM Gateway</h1>
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{nodeName || "Control Plane"}</div>
+            <h1 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>SRT 信号网关</h1>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{nodeName || "播控管理端"}</div>
           </div>
         </div>
 

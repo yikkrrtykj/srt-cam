@@ -22,28 +22,26 @@ type Collector struct {
 	host       *HostCollector
 	httpClient *http.Client
 
-	mu             sync.Mutex
-	prevRestarts   map[string]int
-	lastSrcStatsTS map[string]time.Time
-	lastDstStatsTS map[string]time.Time
-	lastSrcPeerIP  map[string]string
-	lastDstPeerIP  map[string]string
-	demoStart      time.Time
+	mu            sync.Mutex
+	prevRestarts  map[string]int
+	cursors       map[string]ParseCursors
+	lastSrcPeerIP map[string]string
+	lastDstPeerIP map[string]string
+	demoStart     time.Time
 }
 
 // New creates a Collector for the local VPS node.
 func New(cfg config.NodeConfig) *Collector {
 	return &Collector{
-		cfg:            cfg,
-		docker:         NewDockerClient(cfg.DockerSocket),
-		host:           NewHostCollector(cfg.NodeID),
-		httpClient:     &http.Client{Timeout: 2 * time.Second},
-		prevRestarts:   make(map[string]int),
-		lastSrcStatsTS: make(map[string]time.Time),
-		lastDstStatsTS: make(map[string]time.Time),
-		lastSrcPeerIP:  make(map[string]string),
-		lastDstPeerIP:  make(map[string]string),
-		demoStart:      time.Now(),
+		cfg:           cfg,
+		docker:        NewDockerClient(cfg.DockerSocket),
+		host:          NewHostCollector(cfg.NodeID),
+		httpClient:    &http.Client{Timeout: 2 * time.Second},
+		prevRestarts:  make(map[string]int),
+		cursors:       make(map[string]ParseCursors),
+		lastSrcPeerIP: make(map[string]string),
+		lastDstPeerIP: make(map[string]string),
+		demoStart:     time.Now(),
 	}
 }
 
@@ -255,21 +253,29 @@ func (c *Collector) collectRelay(
 		logText, err := c.docker.RecentLogs(ctx, cid, 120, 400)
 		if err == nil {
 			c.mu.Lock()
-			prevSrcTS := c.lastSrcStatsTS[cid]
-			prevDstTS := c.lastDstStatsTS[cid]
+			prevCur := c.cursors[cid]
 			cachedSrcIP := c.lastSrcPeerIP[cid]
 			cachedDstIP := c.lastDstPeerIP[cid]
 			c.mu.Unlock()
 
-			parsed := ParseSRTLogsSince(logText, now, 30*time.Second, prevSrcTS, prevDstTS)
+			parsed := ParseSRTLogsWithCursors(logText, now, 30*time.Second, prevCur)
 
 			c.mu.Lock()
-			if !parsed.SrcLastTS.IsZero() && parsed.SrcLastTS.After(prevSrcTS) {
-				c.lastSrcStatsTS[cid] = parsed.SrcLastTS
+			nextCur := prevCur
+			if !parsed.SrcLastTS.IsZero() && parsed.SrcLastTS.After(nextCur.SrcStatsTS) {
+				nextCur.SrcStatsTS = parsed.SrcLastTS
 			}
-			if !parsed.DstLastTS.IsZero() && parsed.DstLastTS.After(prevDstTS) {
-				c.lastDstStatsTS[cid] = parsed.DstLastTS
+			if !parsed.DstLastTS.IsZero() && parsed.DstLastTS.After(nextCur.DstStatsTS) {
+				nextCur.DstStatsTS = parsed.DstLastTS
 			}
+			if !parsed.SrcConnLastTS.IsZero() && parsed.SrcConnLastTS.After(nextCur.SrcConnTS) {
+				nextCur.SrcConnTS = parsed.SrcConnLastTS
+			}
+			if !parsed.DstConnLastTS.IsZero() && parsed.DstConnLastTS.After(nextCur.DstConnTS) {
+				nextCur.DstConnTS = parsed.DstConnLastTS
+			}
+			c.cursors[cid] = nextCur
+
 			if !parsed.SrcConnected {
 				delete(c.lastSrcPeerIP, cid)
 				cachedSrcIP = ""
@@ -294,8 +300,13 @@ func (c *Collector) collectRelay(
 			sample.SrcLost = parsed.SrcLost
 			sample.SrcRetrans = parsed.SrcRetrans
 			sample.SrcDropped = parsed.SrcDropped
+			sample.SrcBelated = parsed.SrcBelated
+			sample.SrcBytes = parsed.SrcBytes
+			sample.SrcBufMs = parsed.SrcBufMs
 			sample.SrcTSBPDMs = parsed.SrcTSBPDMs
 			sample.SrcLinkBWMbps = parsed.SrcLinkBWMbps
+			sample.SrcMaxBWMbps = parsed.SrcMaxBWMbps
+			sample.SrcReconnects = parsed.SrcReconnects
 			sample.SrcPeerIP = parsed.SrcPeerIP
 			if sample.SrcPeerIP == "" && parsed.SrcConnected {
 				sample.SrcPeerIP = cachedSrcIP
@@ -307,7 +318,11 @@ func (c *Collector) collectRelay(
 			sample.DstLost = parsed.DstLost
 			sample.DstRetrans = parsed.DstRetrans
 			sample.DstDropped = parsed.DstDropped
+			sample.DstBytes = parsed.DstBytes
+			sample.DstBufMs = parsed.DstBufMs
 			sample.DstLinkBWMbps = parsed.DstLinkBWMbps
+			sample.DstMaxBWMbps = parsed.DstMaxBWMbps
+			sample.DstReconnects = parsed.DstReconnects
 			sample.DstPeerIP = parsed.DstPeerIP
 			if sample.DstPeerIP == "" && parsed.DstConnected {
 				sample.DstPeerIP = cachedDstIP
@@ -422,10 +437,20 @@ func (c *Collector) collectPassthrough(ctx context.Context, now time.Time, cid s
 	sample.DstMbps = snap.UpstreamMbps // L4 passthrough forwards full media stream to decoder
 	sample.SrcPackets = int64(snap.UpstreamPackets)
 	sample.DstPackets = int64(snap.DownstreamPackets)
+	sample.SrcBytes = int64(snap.UpstreamMbps * 125000 * float64(maxInt(c.cfg.SampleIntervalSec, 1)))
+	sample.DstBytes = sample.SrcBytes
 	sample.SrcRetrans = int64(snap.RetransPackets)
 	sample.SrcDropped = int64(snap.DropReqPackets)
 	sample.DstNAKCount = int64(snap.NAKLostPackets)
+	sample.SrcReconnects = int64(snap.Handshakes)
 	return sample
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // collectDemo generates realistic bidirectional broadcast telemetry (including a periodic
@@ -488,12 +513,18 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 				s.DstMbps = baseRate + jitter
 				s.SrcPackets = int64(s.SrcMbps * 180)
 				s.DstPackets = int64(s.DstMbps * 180)
+				s.SrcBytes = int64(s.SrcMbps * 250000)
+				s.DstBytes = int64(s.DstMbps * 250000)
 				if leg.Mode != model.ModeUDPPassthrough {
 					s.SrcRTTMs = 38.0 + 4.0*math.Sin(elapsed/7.0+float64(idx))
 					s.DstRTTMs = 46.0 + 5.0*math.Cos(elapsed/9.0+float64(idx))
+					s.SrcBufMs = 44.0 + 6.0*math.Sin(elapsed/8.0+float64(idx))
+					s.DstBufMs = 15.0 + 3.0*math.Cos(elapsed/9.0+float64(idx))
 					s.SrcTSBPDMs = 250
 					s.SrcLinkBWMbps = 45.0 + 4.5*math.Sin(elapsed/18.0+float64(idx))
 					s.DstLinkBWMbps = 42.0 + 3.5*math.Cos(elapsed/20.0+float64(idx))
+					s.SrcMaxBWMbps = 1000
+					s.DstMaxBWMbps = 1000
 				}
 
 				// Show ARQ recovery with 0 unrecovered drops on healthy routes so Recovered vs Dropped is clear
@@ -527,6 +558,8 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 						s.DstMbps = 0
 						s.SrcPackets = 0
 						s.DstPackets = 0
+						s.SrcBytes = 0
+						s.DstBytes = 0
 						s.SrcRetrans = 0
 						s.DstNAKCount = 0
 						s.SrcDropped = 0
@@ -535,6 +568,7 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 				}
 				if grp.ID == "ob-pgm" && leg.Role == "primary" && cycle >= 40 && cycle <= 62 {
 					s.DstRTTMs = 340.0 + 35.0*math.Sin(elapsed)
+					s.DstBufMs = 195.0 + 18.0*math.Sin(elapsed)
 					s.DstLost = 38
 					s.DstRetrans = 42
 					s.DstDropped = 6
