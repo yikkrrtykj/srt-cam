@@ -44,6 +44,7 @@ export function App() {
     initial.openDiagnosis ? "diagnosis" : "realtime"
   );
   const [cleanView, setCleanView] = useState(false);
+  const [wallFullscreen, setWallFullscreen] = useState(false);
 
   // Quick project & site names popover state
   const [sitePopoverOpen, setSitePopoverOpen] = useState(false);
@@ -74,6 +75,39 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    function onFsChange() {
+      if (!document.fullscreenElement) {
+        setWallFullscreen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && wallFullscreen) {
+        setWallFullscreen(false);
+      }
+    }
+    document.addEventListener("fullscreenchange", onFsChange);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [wallFullscreen]);
+
+  async function toggleWallFullscreen(next?: boolean) {
+    const target = typeof next === "boolean" ? next : !wallFullscreen;
+    setWallFullscreen(target);
+    try {
+      if (target && !document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else if (!target && document.fullscreenElement) {
+        await document.exitFullscreen();
+      }
+    } catch {
+      // Keep clean TV viewport mode even if browser blocks native Fullscreen API
+    }
+  }
+
+  useEffect(() => {
     if (!auth?.authenticated) return;
     void loadOverview();
 
@@ -96,6 +130,9 @@ export function App() {
 
   function navigate(nextTab: NavTab) {
     setCleanView(false);
+    if (nextTab !== "monitor" && wallFullscreen) {
+      void toggleWallFullscreen(false);
+    }
     setTab(nextTab);
     window.location.hash = `#/${nextTab}`;
   }
@@ -156,14 +193,22 @@ export function App() {
 
   const alertCount =
     overview?.groups.filter(
-      (g) => g.expected_active && g.severity !== "HEALTHY" && g.severity !== "IDLE"
+      (g) => g.enabled && g.expected_active && g.severity !== "HEALTHY" && g.severity !== "IDLE" && g.severity !== "STOPPED"
     ).length ?? 0;
+
+  const isTvWallMode = wallFullscreen && tab === "monitor";
+  const hideTopHeader = cleanView || isTvWallMode;
 
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="min-h-screen flex flex-col bg-[#0A0B0D] text-[#F1F3F6]">
-        {/* Thin 48px Hardware Top Navigation Bar (No Left Nav Rail) */}
-        {!cleanView && (
+      <div
+        className={cn(
+          "flex flex-col bg-[#0A0B0D] text-[#F1F3F6]",
+          isTvWallMode ? "h-screen overflow-hidden" : "min-h-screen"
+        )}
+      >
+        {/* Thin 48px Hardware Top Navigation Bar (Hidden in TV Wall Fullscreen & Evidence Clean Mode) */}
+        {!hideTopHeader && (
           <header className="sticky top-0 z-40 h-12 shrink-0 border-b border-[#1E222B] bg-[#111316] px-4 flex items-center justify-between gap-4">
             {/* Left: Brand + 4 Clean Underline Nav Tabs */}
             <div className="flex items-center gap-7 h-full">
@@ -315,7 +360,7 @@ export function App() {
         )}
 
         {/* Main Workspace */}
-        <main className="flex-1 min-h-0">
+        <main className={cn("flex-1 min-h-0", isTvWallMode && "flex flex-col overflow-hidden")}>
           {!overview ? (
             <div className="p-6 text-[12.5px] text-[#7C8596]">正在连接中转服务器...</div>
           ) : tab === "monitor" ? (
@@ -326,6 +371,8 @@ export function App() {
               initialSubTab={monitorSubTab}
               cleanView={cleanView}
               onToggleCleanView={setCleanView}
+              wallFullscreen={wallFullscreen}
+              onToggleWallFullscreen={(next) => void toggleWallFullscreen(next)}
               onRefresh={() => void loadOverview()}
             />
           ) : tab === "sheet" ? (

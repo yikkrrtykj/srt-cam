@@ -76,13 +76,13 @@ export function RouteThumbnail({ leg, label, variant = "mini", className }: Prop
       ? "w-[68px] h-[38px] rounded-[4px]"
       : variant === "hero"
       ? "w-[196px] h-[110px] rounded-md"
-      : "w-full aspect-video rounded-none";
+      : "w-full aspect-video md:aspect-auto md:h-full rounded-none";
 
   return (
     <div
       className={cn(
-        "relative shrink-0 overflow-hidden bg-[#14171D] flex items-center justify-center select-none",
-        variant !== "wall" && "border border-[#262B35]",
+        "relative shrink-0 overflow-hidden flex items-center justify-center select-none",
+        variant === "wall" ? "bg-[#0B0D11]" : "bg-[#14171D] border border-[#262B35]",
         sizeCls,
         className
       )}
@@ -91,7 +91,10 @@ export function RouteThumbnail({ leg, label, variant = "mini", className }: Prop
         <img
           src={imgSrc}
           alt={`${label} 画面预览`}
-          className="h-full w-full object-cover"
+          className={cn(
+            "h-full w-full",
+            variant === "wall" ? "object-contain" : "object-cover"
+          )}
           loading="lazy"
         />
       ) : (
