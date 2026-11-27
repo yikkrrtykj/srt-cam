@@ -3,10 +3,12 @@ package preview
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strings"
 	"sync"
@@ -23,37 +25,122 @@ type Snapshot struct {
 	UpdatedAt   time.Time
 }
 
-// Manager runs optional, strictly bounded 5-second keyframe snapshot grabbers so
-// thumbnail previews never compete with live broadcast SRT forwarding.
+// Manager runs optional, viewer-driven 5-second keyframe snapshot grabbers with a strict
+// concurrency cap so thumbnail previews consume 0% CPU when idle and never compete with
+// live broadcast SRT forwarding.
 type Manager struct {
-	targets    []config.PreviewTarget
-	httpClient *http.Client
-	ffmpegPath string
+	explicit    map[string]config.PreviewTarget
+	httpClient  *http.Client
+	probeClient *http.Client
+	ffmpegPath  string
+	sem         chan struct{} // bounds concurrent ffmpeg processes (default 2)
 
-	mu    sync.RWMutex
-	cache map[string]Snapshot
+	mu         sync.RWMutex
+	targets    map[string]config.PreviewTarget
+	cache      map[string]Snapshot
+	lastViewed map[string]time.Time
+	inFlight   map[string]bool
+	rootCtx    context.Context
 }
 
 // NewManager initializes a preview thumbnail manager for the configured PreviewTargets.
 func NewManager(targets []config.PreviewTarget) *Manager {
 	ffPath, _ := exec.LookPath("ffmpeg")
+	exp := make(map[string]config.PreviewTarget, len(targets))
+	all := make(map[string]config.PreviewTarget, len(targets))
+	for _, t := range targets {
+		cid := strings.TrimSpace(t.ChannelID)
+		if cid == "" || strings.TrimSpace(t.InputURL) == "" {
+			continue
+		}
+		if t.IntervalSec < 3 {
+			t.IntervalSec = 5
+		}
+		exp[cid] = t
+		all[cid] = t
+	}
 	return &Manager{
-		targets:    targets,
-		httpClient: &http.Client{Timeout: 3 * time.Second},
-		ffmpegPath: ffPath,
-		cache:      make(map[string]Snapshot),
+		explicit:    exp,
+		httpClient:  &http.Client{Timeout: 3 * time.Second},
+		probeClient: &http.Client{Timeout: 350 * time.Millisecond},
+		ffmpegPath:  ffPath,
+		sem:         make(chan struct{}, 2),
+		targets:     all,
+		cache:       make(map[string]Snapshot),
+		lastViewed:  make(map[string]time.Time),
+		inFlight:    make(map[string]bool),
+		rootCtx:     context.Background(),
 	}
 }
 
-// Start launches one low-priority background snapshot loop per configured PreviewTarget.
-// It is a no-op when no preview targets are configured.
-func (m *Manager) Start(ctx context.Context) {
-	for _, t := range m.targets {
-		if strings.TrimSpace(t.ChannelID) == "" || strings.TrimSpace(t.InputURL) == "" {
-			continue
-		}
-		go m.runTarget(ctx, t)
+// SyncEventSheet registers zero-config local preview tap URLs (http://127.0.0.1:<inPort+8000>/ts)
+// for local Mode A srt-relay legs whenever not overridden by explicit config.Previews.
+func (m *Manager) SyncEventSheet(localNodeID string, sheet config.EventSheet) {
+	next := make(map[string]config.PreviewTarget, len(m.explicit)+10)
+	for cid, t := range m.explicit {
+		next[cid] = t
 	}
+	for _, grp := range sheet.SignalGroups {
+		for _, leg := range grp.Legs {
+			if leg.NodeID != localNodeID || leg.Mode != model.ModeSRTRelay {
+				continue
+			}
+			if _, ok := next[leg.ChannelID]; ok {
+				continue
+			}
+			if leg.InPort >= 21111 && leg.InPort <= 21200 {
+				next[leg.ChannelID] = config.PreviewTarget{
+					ChannelID:   leg.ChannelID,
+					InputURL:    fmt.Sprintf("http://127.0.0.1:%d/ts", leg.InPort+8000),
+					IntervalSec: 5,
+				}
+			}
+		}
+	}
+	m.mu.Lock()
+	m.targets = next
+	m.mu.Unlock()
+}
+
+// Start runs a single lightweight scheduler tick that refreshes only channels actively
+// viewed within the last 30 seconds. When no dashboard is open, ffmpeg is never invoked.
+func (m *Manager) Start(ctx context.Context) {
+	m.mu.Lock()
+	m.rootCtx = ctx
+	m.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				m.scheduleDue(ctx, now)
+			}
+		}
+	}()
+}
+
+// Touch marks channelID as actively viewed by a browser and triggers an immediate non-blocking
+// capture if no fresh thumbnail is cached yet.
+func (m *Manager) Touch(channelID string) {
+	now := time.Now()
+	m.mu.Lock()
+	m.lastViewed[channelID] = now
+	target, hasTarget := m.targets[channelID]
+	snap, hasSnap := m.cache[channelID]
+	busy := m.inFlight[channelID]
+	ctx := m.rootCtx
+	stale := !hasSnap || now.Sub(snap.UpdatedAt) >= time.Duration(target.IntervalSec)*time.Second
+	if hasTarget && stale && !busy {
+		m.inFlight[channelID] = true
+		m.mu.Unlock()
+		go m.captureAsync(ctx, target)
+		return
+	}
+	m.mu.Unlock()
 }
 
 // Snapshot returns the most recent thumbnail for channelID if captured within maxAge.
@@ -70,23 +157,41 @@ func (m *Manager) Snapshot(channelID string, maxAge time.Duration) (Snapshot, bo
 	return snap, true
 }
 
-func (m *Manager) runTarget(ctx context.Context, t config.PreviewTarget) {
-	interval := t.IntervalSec
-	if interval < 3 {
-		interval = 5
-	}
-	m.captureOnce(ctx, t)
-
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			m.captureOnce(ctx, t)
+func (m *Manager) scheduleDue(ctx context.Context, now time.Time) {
+	m.mu.Lock()
+	var due []config.PreviewTarget
+	for cid, target := range m.targets {
+		viewedAt, viewed := m.lastViewed[cid]
+		if !viewed || now.Sub(viewedAt) > 30*time.Second {
+			continue
 		}
+		if m.inFlight[cid] {
+			continue
+		}
+		interval := time.Duration(target.IntervalSec) * time.Second
+		if interval < 3*time.Second {
+			interval = 5 * time.Second
+		}
+		if snap, ok := m.cache[cid]; ok && now.Sub(snap.UpdatedAt) < interval {
+			continue
+		}
+		m.inFlight[cid] = true
+		due = append(due, target)
 	}
+	m.mu.Unlock()
+
+	for _, t := range due {
+		go m.captureAsync(ctx, t)
+	}
+}
+
+func (m *Manager) captureAsync(ctx context.Context, t config.PreviewTarget) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.inFlight, t.ChannelID)
+		m.mu.Unlock()
+	}()
+	m.captureOnce(ctx, t)
 }
 
 func (m *Manager) captureOnce(ctx context.Context, t config.PreviewTarget) {
@@ -94,12 +199,24 @@ func (m *Manager) captureOnce(ctx context.Context, t config.PreviewTarget) {
 	var ct string
 	var err error
 
-	lower := strings.ToLower(strings.TrimSpace(t.InputURL))
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
-		data, ct, err = m.fetchHTTPSnapshot(ctx, t.InputURL)
-	} else {
-		data, ct, err = m.grabFFmpegKeyframe(ctx, t.InputURL)
+	rawURL := strings.TrimSpace(t.InputURL)
+	lower := strings.ToLower(rawURL)
+
+	switch {
+	case isLocalTSTapURL(rawURL):
+		// Fast 350ms pre-flight /healthz check: skip without spawning ffmpeg if container is
+		// legacy v1 (no tee) or currently has no active video flow.
+		if !m.isLocalTapFlowing(ctx, rawURL) {
+			return
+		}
+		data, ct, err = m.grabFFmpegKeyframe(ctx, rawURL, true)
+	case strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://"):
+		data, ct, err = m.fetchHTTPSnapshot(ctx, rawURL)
+	default:
+		isTS := strings.HasPrefix(lower, "udp://") || strings.HasPrefix(lower, "srt://")
+		data, ct, err = m.grabFFmpegKeyframe(ctx, rawURL, isTS)
 	}
+
 	if err != nil || len(data) == 0 {
 		return
 	}
@@ -110,6 +227,42 @@ func (m *Manager) captureOnce(ctx context.Context, t config.PreviewTarget) {
 		UpdatedAt:   time.Now(),
 	}
 	m.mu.Unlock()
+}
+
+func isLocalTSTapURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return (u.Scheme == "http" || u.Scheme == "https") && strings.HasSuffix(strings.ToLower(u.Path), "/ts")
+}
+
+func (m *Manager) isLocalTapFlowing(ctx context.Context, tsURL string) bool {
+	u, err := url.Parse(tsURL)
+	if err != nil {
+		return false
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/ts") + "/healthz"
+	u.RawQuery = ""
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return false
+	}
+	resp, err := m.probeClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var payload struct {
+		Flowing bool `json:"flowing"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&payload); err != nil {
+		return false
+	}
+	return payload.Flowing
 }
 
 func (m *Manager) fetchHTTPSnapshot(ctx context.Context, urlStr string) ([]byte, string, error) {
@@ -125,11 +278,16 @@ func (m *Manager) fetchHTTPSnapshot(ctx context.Context, urlStr string) ([]byte,
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
+	ct := resp.Header.Get("Content-Type")
+	if strings.HasPrefix(strings.ToLower(ct), "video/") {
+		// Stream endpoint mistakenly configured without /ts suffix -> hand off to ffmpeg
+		_ = resp.Body.Close()
+		return m.grabFFmpegKeyframe(ctx, urlStr, strings.Contains(strings.ToLower(ct), "mp2t"))
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		return nil, "", err
 	}
-	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
 		ct = http.DetectContentType(data)
 	}
@@ -139,21 +297,36 @@ func (m *Manager) fetchHTTPSnapshot(ctx context.Context, urlStr string) ([]byte,
 	return data, ct, nil
 }
 
-func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string) ([]byte, string, error) {
+func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string, forceMPEGTS bool) ([]byte, string, error) {
 	if m.ffmpegPath == "" {
 		return nil, "", fmt.Errorf("ffmpeg not installed")
 	}
-	cctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+
+	// Acquire concurrency slot (max 2 simultaneous ffmpeg grabs) so small VPS CPUs stay safe.
+	select {
+	case m.sem <- struct{}{}:
+		defer func() { <-m.sem }()
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 
 	// Strictly grab 1 keyframe (-skip_frame nokey -frames:v 1), no audio/subtitle decode,
-	// scaled to 320x180 JPEG so CPU usage stays negligible on relay hosts.
-	cmd := exec.CommandContext(
-		cctx,
-		m.ffmpegPath,
+	// bounded probe size and scaled to 320x180 JPEG so CPU usage stays negligible on relay hosts.
+	args := []string{
 		"-nostdin",
 		"-loglevel", "error",
+		"-fflags", "nobuffer+discardcorrupt",
 		"-flags", "low_delay",
+		"-probesize", "2000000",
+		"-analyzeduration", "2500000",
+	}
+	if forceMPEGTS {
+		args = append(args, "-f", "mpegts")
+	}
+	args = append(args,
 		"-skip_frame", "nokey",
 		"-an", "-sn", "-dn",
 		"-i", inputURL,
@@ -164,6 +337,8 @@ func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string) ([]by
 		"-vcodec", "mjpeg",
 		"pipe:1",
 	)
+
+	cmd := exec.CommandContext(cctx, m.ffmpegPath, args...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -270,7 +445,6 @@ func RenderDemoMonitorSVG(label string, sample model.ChannelSample, now time.Tim
 
 	var sceneSVG string
 	if isMV {
-		// Subtle 4x4 multiview grid silhouette
 		sceneSVG = `<g stroke="rgba(148,163,184,0.22)" stroke-width="1" fill="rgba(47,129,247,0.06)">
     <rect x="24" y="20" width="60" height="32" rx="2"/><rect x="88" y="20" width="60" height="32" rx="2"/>
     <rect x="152" y="20" width="60" height="32" rx="2"/><rect x="216" y="20" width="60" height="32" rx="2"/>
@@ -280,7 +454,6 @@ func RenderDemoMonitorSVG(label string, sample model.ChannelSample, now time.Tim
     <rect x="152" y="92" width="60" height="32" rx="2"/><rect x="216" y="92" width="60" height="32" rx="2"/>
   </g>`
 	} else {
-		// Broadcast stage horizon + subtle camera framing & live signal sweep
 		sceneSVG = fmt.Sprintf(`<ellipse cx="152" cy="116" rx="116" ry="34" fill="rgba(56,189,248,0.09)"/>
   <path d="M22 120 Q %d 64 156 92 T 282 80" fill="none" stroke="rgba(96,165,250,0.34)" stroke-width="2"/>
   <g stroke="rgba(230,237,243,0.22)" stroke-width="1.2" fill="none">

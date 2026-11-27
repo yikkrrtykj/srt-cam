@@ -97,6 +97,7 @@ func main() {
 	)
 	srv.SetLogsFunc(col.ChannelLogs)
 	srv.SetThumbnailFunc(func(channelID string) ([]byte, string, bool) {
+		previewMgr.Touch(channelID)
 		snap, ok := previewMgr.Snapshot(channelID, 30*time.Second)
 		if !ok {
 			return nil, "", false
@@ -107,10 +108,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	previewMgr.SyncEventSheet(cfg.NodeID, evStore.Get())
 	previewMgr.Start(ctx)
 
 	// Run initial sample immediately so first page load has complete live data
-	runCycle(ctx, cfg, evStore, col, clusterMgr, store, alertMgr, srv)
+	runCycle(ctx, cfg, evStore, col, clusterMgr, store, alertMgr, previewMgr, srv)
 
 	// Background telemetry & alert loop
 	go func() {
@@ -124,7 +126,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				runCycle(ctx, cfg, evStore, col, clusterMgr, store, alertMgr, srv)
+				runCycle(ctx, cfg, evStore, col, clusterMgr, store, alertMgr, previewMgr, srv)
 			case <-pruneTicker.C:
 				cutoff := time.Now().Add(-time.Duration(cfg.RetentionDays) * 24 * time.Hour).Unix()
 				if n, err := store.PruneOlderThan(ctx, cutoff); err == nil && n > 0 {
@@ -164,9 +166,11 @@ func runCycle(
 	clusterMgr *cluster.Manager,
 	store *storage.Store,
 	alertMgr *notify.AlertManager,
+	previewMgr *preview.Manager,
 	srv *web.Server,
 ) {
 	sheet := evStore.Get()
+	previewMgr.SyncEventSheet(cfg.NodeID, sheet)
 	localStatus, samples := col.CollectOnce(ctx, sheet)
 	_ = store.InsertSamples(ctx, localStatus.Host, samples)
 

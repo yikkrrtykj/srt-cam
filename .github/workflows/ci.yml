@@ -8,7 +8,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Shell syntax
-        run: bash -n install.sh
+        run: |
+          bash -n install.sh
+          bash -n scripts/init-v2-node.sh
       - name: Python syntax and unit tests
         run: |
           python3 -m py_compile srt-status
@@ -39,3 +41,4 @@ jobs:
           go test -v ./...
           CGO_ENABLED=0 go build -o /tmp/srt-camd ./cmd/srt-camd
           CGO_ENABLED=0 go build -o /tmp/srt-passd ./cmd/srt-passd
+          CGO_ENABLED=0 go build -o /tmp/srt-relayd ./cmd/srt-relayd

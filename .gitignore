@@ -1,7 +1,11 @@
 # Compiled binaries
 /srt-camd
 /srt-passd
+/srt-relayd
 /bin/
+
+# Local production secrets (keep *.example.json tracked)
+/deploy/config.json
 
 # SQLite runtime files
 *.db
