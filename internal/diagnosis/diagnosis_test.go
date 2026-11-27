@@ -224,3 +224,70 @@ func TestEvaluateSignalGroupRedundancy(t *testing.T) {
 		t.Fatalf("severity2 = %s, want CRITICAL_OUTAGE", sev2)
 	}
 }
+
+func TestEvaluateSignalGroupExpectedActiveOff(t *testing.T) {
+	grp := config.SignalGroupConfig{
+		ID:             "cam2",
+		Name:           "讯道 2",
+		Direction:      model.DirectionVenueToHub,
+		RedundancyType: model.RedundancySingle,
+		ExpectedActive: false,
+	}
+
+	// 1. No stream flowing -> IDLE ("待机")
+	sevIdle, summaryIdle, _ := EvaluateSignalGroup(grp, []model.LegLiveView{
+		{
+			Role: "single", NodeID: "vps-1", ChannelID: "srt-cam10", NodeOnline: true,
+			Sample: model.ChannelSample{FaultCode: model.FaultIdleExpectedOff, FaultSummary: "待机"},
+		},
+	})
+	if sevIdle != model.SeverityIdle || summaryIdle != "待机" {
+		t.Fatalf("no-flow expected IDLE/待机, got (%s, %q)", sevIdle, summaryIdle)
+	}
+
+	// 2. Live stream with severe packet drops -> DEGRADED_SINGLE (must NOT masquerade as IDLE!)
+	sevDrop, _, _ := EvaluateSignalGroup(grp, []model.LegLiveView{
+		{
+			Role: "single", NodeID: "vps-1", ChannelID: "srt-cam10", NodeOnline: true,
+			Sample: model.ChannelSample{
+				SrcConnected: true, SrcMbps: 13.8, DstConnected: true, DstMbps: 10.0,
+				DstDropped: 731, FaultCode: model.FaultDownstreamDegraded,
+				FaultSummary: "拉流段波动 · 弃包 731",
+			},
+		},
+	})
+	if sevDrop != model.SeverityDegradedSingle {
+		t.Fatalf("live packet drop with expected_active=false got %s, want DEGRADED_SINGLE", sevDrop)
+	}
+
+	// 3. Live upstream pushing without downstream receiver -> CRITICAL_OUTAGE (UI displays 待拉流, NOT 待机)
+	sevWait, _, _ := EvaluateSignalGroup(grp, []model.LegLiveView{
+		{
+			Role: "single", NodeID: "vps-1", ChannelID: "srt-cam10", NodeOnline: true,
+			Sample: model.ChannelSample{
+				SrcConnected: true, SrcMbps: 5.4, DstMbps: 0,
+				FaultCode: model.FaultDownstreamOffline, FaultSummary: "等待拉流连接",
+			},
+		},
+	})
+	if sevWait != model.SeverityCriticalOutage {
+		t.Fatalf("live awaiting downstream with expected_active=false got %s, want CRITICAL_OUTAGE", sevWait)
+	}
+
+	// 4. Dual-leg with expected_active=false: primary healthy, backup idle -> HEALTHY
+	dualGrp := grp
+	dualGrp.RedundancyType = model.RedundancyDualHardware
+	sevDual, _, _ := EvaluateSignalGroup(dualGrp, []model.LegLiveView{
+		{
+			Role: "primary", NodeID: "vps-1", ChannelID: "srt-cam1", NodeOnline: true,
+			Sample: model.ChannelSample{FaultCode: model.FaultHealthy, FaultSummary: "正常"},
+		},
+		{
+			Role: "backup", NodeID: "vps-2", ChannelID: "srt-cam1", NodeOnline: true,
+			Sample: model.ChannelSample{FaultCode: model.FaultIdleExpectedOff, FaultSummary: "待机"},
+		},
+	})
+	if sevDual != model.SeverityHealthy {
+		t.Fatalf("primary healthy + backup idle with expected_active=false got %s, want HEALTHY", sevDual)
+	}
+}

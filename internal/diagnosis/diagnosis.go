@@ -90,7 +90,7 @@ func DiagnoseChannel(
 				fmt.Sprintf("%s经本机隧道转发 · %.2f Mb/s（统计不反映外层隧道抖动）", tag, sample.SrcMbps)
 		}
 		return model.FaultHealthy, "none",
-			fmt.Sprintf("%s正常在播 · %.2f Mb/s · 重传 %d / 弃包 0",
+			fmt.Sprintf("%s正常 · %.2f Mb/s · 重传 %d / 弃包 0",
 				tag, sample.SrcMbps, sample.SrcRetrans)
 	}
 
@@ -171,7 +171,7 @@ func DiagnoseChannel(
 	}
 
 	return model.FaultHealthy, "none",
-		fmt.Sprintf("%s正常在播 · 推流 %.2f / 拉流 %.2f Mb/s · 时延 %.0f/%.0f ms",
+		fmt.Sprintf("%s正常 · 推流 %.2f / 拉流 %.2f Mb/s · 时延 %.0f/%.0f ms",
 			tag, sample.SrcMbps, sample.DstMbps, sample.SrcRTTMs, sample.DstRTTMs)
 }
 
@@ -195,6 +195,9 @@ func IsLegHardOutage(code model.FaultCode) bool {
 
 // EvaluateSignalGroup aggregates primary & backup legs across VPS nodes into
 // concise broadcast-operations severity, status text, and active backup identifier.
+// Note: ExpectedActive controls outage alerting (and treats no-flow legs as IDLE rather than
+// CRITICAL_OUTAGE), but any live stream with real packet drops, jitter, or awaiting downstream
+// still reports its true live severity instead of masquerading as IDLE ("待机").
 func EvaluateSignalGroup(
 	grp config.SignalGroupConfig,
 	legs []model.LegLiveView,
@@ -202,21 +205,9 @@ func EvaluateSignalGroup(
 	if !grp.IsEnabled() {
 		return model.SeverityStopped, "已停止", ""
 	}
-	if !grp.ExpectedActive {
-		allHealthy := len(legs) > 0
-		for _, leg := range legs {
-			if !leg.NodeOnline || !IsLegHealthy(leg.Sample.FaultCode) {
-				allHealthy = false
-				break
-			}
-		}
-		if allHealthy {
-			return model.SeverityHealthy, "通流（未开启告警）", ""
-		}
-		return model.SeverityIdle, "待机", ""
-	}
 
 	var healthyLegs []model.LegLiveView
+	var idleLegs []model.LegLiveView
 	var degradedLegs []model.LegLiveView
 	var outageLegs []model.LegLiveView
 
@@ -229,6 +220,8 @@ func EvaluateSignalGroup(
 		switch {
 		case IsLegHealthy(code):
 			healthyLegs = append(healthyLegs, leg)
+		case !grp.ExpectedActive && code == model.FaultIdleExpectedOff:
+			idleLegs = append(idleLegs, leg)
 		case IsLegHardOutage(code):
 			outageLegs = append(outageLegs, leg)
 		default:
@@ -236,12 +229,18 @@ func EvaluateSignalGroup(
 		}
 	}
 
-	if len(healthyLegs) == len(legs) && len(legs) > 0 {
-		if len(legs) >= 2 {
+	// All legs genuinely idle (no flow while expected_active is off).
+	if len(legs) > 0 && len(idleLegs) == len(legs) {
+		return model.SeverityIdle, "待机", ""
+	}
+
+	// All active legs healthy (including optional unused backup legs sitting idle).
+	if len(healthyLegs) > 0 && len(healthyLegs)+len(idleLegs) == len(legs) {
+		if len(healthyLegs) >= 2 {
 			return model.SeverityHealthy,
 				fmt.Sprintf("主备在线 · %s %.1f / %s %.1f Mb/s",
-					shortLegTag(legs[0]), legs[0].Sample.SrcMbps,
-					shortLegTag(legs[1]), legs[1].Sample.SrcMbps),
+					shortLegTag(healthyLegs[0]), healthyLegs[0].Sample.SrcMbps,
+					shortLegTag(healthyLegs[1]), healthyLegs[1].Sample.SrcMbps),
 				""
 		}
 		return model.SeverityHealthy, healthyLegs[0].Sample.FaultSummary, ""
