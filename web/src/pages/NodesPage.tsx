@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, Copy, Pencil, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
+import { Check, Copy, Pencil, Plus, RefreshCw, Server, Terminal, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { AuditEntry, NodeLiveStatus, NodesConfigView, PeerNodeView } from "@/types";
 import { api, auditActionText, formatDateTime, formatTime } from "@/api";
@@ -20,11 +20,53 @@ interface Props {
   onNodesChanged: () => void;
 }
 
+function shQuote(val: string): string {
+  return `'${val.replace(/'/g, `'\\''`)}'`;
+}
+
+function extractPort(apiURL: string): string {
+  try {
+    const u = new URL(apiURL);
+    if (u.port) return u.port;
+    return u.protocol === "https:" ? "443" : "80";
+  } catch {
+    return "18080";
+  }
+}
+
+function buildPeerInstallCmd(opts: {
+  nodeId: string;
+  displayName: string;
+  region: string;
+  publicIP: string;
+  apiURL: string;
+  clusterToken: string;
+}): string {
+  const id = opts.nodeId.trim() || "vps-2";
+  const name = opts.displayName.trim() || id;
+  const port = extractPort(opts.apiURL.trim());
+  const args = [
+    `--node-id ${shQuote(id)}`,
+    `--name ${shQuote(name)}`,
+  ];
+  if (opts.region.trim()) args.push(`--region ${shQuote(opts.region.trim())}`);
+  if (opts.publicIP.trim()) args.push(`--public-ip ${shQuote(opts.publicIP.trim())}`);
+  args.push(`--port ${port}`);
+  if (opts.clusterToken.trim()) {
+    args.push(`--cluster-token ${shQuote(opts.clusterToken.trim())}`);
+  }
+  args.push("--up");
+  return [
+    `git clone https://github.com/yikkrrtykj/srt-cam.git ~/srt-cam 2>/dev/null || (cd ~/srt-cam && git pull --ff-only origin main)`,
+    `cd ~/srt-cam && docker build -f deploy/Dockerfile.camd -t srt-camd:v2 . && bash scripts/init-v2-node.sh ${args.join(" ")}`,
+  ].join("\n");
+}
+
 export function NodesPage({ nodes, onNodesChanged }: Props) {
   const [audits, setAudits] = useState<AuditEntry[]>([]);
   const [nodesCfg, setNodesCfg] = useState<NodesConfigView | null>(null);
   const [loading, setLoading] = useState(false);
-  const [copiedToken, setCopiedToken] = useState(false);
+  const [copiedKey, setCopiedKey] = useState("");
 
   // Edit local node dialog state
   const [localDialogOpen, setLocalDialogOpen] = useState(false);
@@ -60,6 +102,17 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
   useEffect(() => {
     void loadAll();
   }, []);
+
+  async function copyText(key: string, label: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      toast.success(`已复制${label}`);
+      window.setTimeout(() => setCopiedKey((cur) => (cur === key ? "" : cur)), 1600);
+    } catch {
+      toast.error("复制失败");
+    }
+  }
 
   function openEditLocal() {
     if (!nodesCfg) return;
@@ -125,7 +178,7 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
       });
       setNodesCfg(updated);
       setPeerDialogOpen(false);
-      toast.success(`服务器 ${peerNodeId.trim()} 已保存，正在建立监控连接`);
+      toast.success(`服务器 ${peerNodeId.trim()} 已保存；在新服务器粘贴一键接入命令后几秒即自动上线`);
       onNodesChanged();
       void loadAll();
     } catch (err) {
@@ -147,20 +200,18 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
     }
   }
 
-  async function copyClusterToken() {
-    if (!nodesCfg?.local.cluster_token) return;
-    try {
-      await navigator.clipboard.writeText(nodesCfg.local.cluster_token);
-      setCopiedToken(true);
-      toast.success("已复制集群互联密钥");
-      window.setTimeout(() => setCopiedToken(false), 1500);
-    } catch {
-      toast.error("复制失败");
-    }
-  }
-
   const localId = nodesCfg?.local.node_id;
+  const localToken = nodesCfg?.local.cluster_token || "";
   const peerById = new Map((nodesCfg?.peers ?? []).map((p) => [p.node_id, p]));
+
+  const livePeerInstallCmd = buildPeerInstallCmd({
+    nodeId: peerNodeId,
+    displayName: peerName,
+    region: peerRegion,
+    publicIP: peerIP,
+    apiURL: peerURL || (peerIP.trim() ? `http://${peerIP.trim()}:18080` : "http://IP:18080"),
+    clusterToken: peerToken.trim() || localToken,
+  });
 
   return (
     <div className="mx-auto max-w-[1280px] p-4 lg:p-6 space-y-5">
@@ -168,7 +219,7 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
         <div>
           <h1 className="text-[16px] font-semibold text-[#F1F3F6]">中转服务器与播控记录</h1>
           <p className="mt-0.5 text-[12px] text-[#8B94A5]">
-            管理本机与远端中转服务器（添加后即可在通道配置中分配主备路由），并查看实时负载与操作记录。
+            在此填入新服务器 IP 并复制一键接入命令，新机运行后自动上线并可在通道配置中分配主备路由。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -192,17 +243,17 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
               中转服务器 ({nodes.length})
             </h2>
           </div>
-          {nodesCfg?.local.cluster_token && (
+          {localToken && (
             <button
               type="button"
-              onClick={copyClusterToken}
+              onClick={() => void copyText("cluster-tok", "集群互联密钥", localToken)}
               className="inline-flex items-center gap-1.5 text-[11.5px] text-[#8B94A5] hover:text-[#F1F3F6] cursor-pointer"
             >
               <span>集群互联密钥：</span>
               <code className="tabular text-[#C8CFD9]">
-                {nodesCfg.local.cluster_token.slice(0, 6)}••••{nodesCfg.local.cluster_token.slice(-4)}
+                {localToken.slice(0, 6)}••••{localToken.slice(-4)}
               </code>
-              {copiedToken ? (
+              {copiedKey === "cluster-tok" ? (
                 <Check className="h-3.5 w-3.5 text-[#4ADE80]" />
               ) : (
                 <Copy className="h-3.5 w-3.5" />
@@ -228,6 +279,7 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
               {nodes.map((n) => {
                 const isLocal = n.node_id === localId;
                 const peerMeta = peerById.get(n.node_id);
+                const rowCmdKey = `cmd-${n.node_id}`;
                 return (
                   <tr key={n.node_id} className="hover:bg-white/[0.02]">
                     <td className="px-4 py-2.5">
@@ -271,6 +323,31 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
                         </Button>
                       ) : peerMeta ? (
                         <div className="inline-flex items-center gap-1">
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            onClick={() =>
+                              void copyText(
+                                rowCmdKey,
+                                `${peerMeta.node_id} 一键接入命令`,
+                                buildPeerInstallCmd({
+                                  nodeId: peerMeta.node_id,
+                                  displayName: peerMeta.display_name,
+                                  region: peerMeta.region,
+                                  publicIP: peerMeta.public_ip,
+                                  apiURL: peerMeta.api_url,
+                                  clusterToken: localToken,
+                                })
+                              )
+                            }
+                          >
+                            {copiedKey === rowCmdKey ? (
+                              <Check className="h-3 w-3 text-[#4ADE80]" />
+                            ) : (
+                              <Terminal className="h-3 w-3" />
+                            )}
+                            接入命令
+                          </Button>
                           <Button variant="ghost" size="xs" onClick={() => openEditPeer(peerMeta)}>
                             编辑
                           </Button>
@@ -393,11 +470,11 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
 
       {/* Dialog: Add / Edit Remote Peer Server */}
       <Dialog open={peerDialogOpen} onOpenChange={setPeerDialogOpen}>
-        <DialogContent className="max-w-[520px]">
+        <DialogContent className="max-w-[580px]">
           <DialogHeader>
             <DialogTitle>{editingPeerId ? `编辑服务器 (${editingPeerId})` : "添加中转服务器"}</DialogTitle>
             <DialogDescription>
-              接入另一台已部署 srt-camd 的中转服务器，即可在本控制台统一监看和配置双路主备。
+              填好新服务器 IP 后保存，再直接复制下方自动生成的接入命令粘贴到新服务器终端运行即可自动上线。
             </DialogDescription>
           </DialogHeader>
 
@@ -433,14 +510,14 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[12px] text-[#98A1B0]">公网 IP（用于生成 SRT 地址）</label>
+                <label className="text-[12px] text-[#98A1B0]">公网 IP</label>
                 <Input
                   className="tabular"
                   value={peerIP}
                   onChange={(e) => {
                     const v = e.target.value;
                     setPeerIP(v);
-                    if (!editingPeerId && !peerURL && v.trim()) {
+                    if (!editingPeerId && v.trim()) {
                       setPeerURL(`http://${v.trim()}:18080`);
                     }
                   }}
@@ -449,38 +526,53 @@ export function NodesPage({ nodes, onNodesChanged }: Props) {
               </div>
             </div>
 
-            <div className="space-y-1">
-              <label className="text-[12px] text-[#98A1B0]">远端控制面地址</label>
-              <Input
-                className="tabular"
-                value={peerURL}
-                onChange={(e) => setPeerURL(e.target.value)}
-                placeholder="http://服务器IP:18080"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-[12px] text-[#98A1B0]">
-                集群互联密钥（留空则默认使用本机密钥）
-              </label>
-              <Input
-                type="password"
-                className="tabular"
-                value={peerToken}
-                onChange={(e) => setPeerToken(e.target.value)}
-                placeholder="新服务器初始化时通过 --cluster-token 填入相同密钥即可"
-              />
-            </div>
-
-            <div className="rounded-md border border-[#1E222B] bg-[#0B0D10] p-2.5 text-[11px] text-[#8B94A5] space-y-1">
-              <div className="text-[#C8CFD9] font-medium">新服务器一键接入说明：</div>
-              <div>
-                在新服务器拉取代码后执行{" "}
-                <code className="tabular text-[#E6E9EF]">
-                  bash scripts/init-v2-node.sh --node-id {peerNodeId || "vps-2"} --port 18080 --cluster-token &lt;本机密钥&gt; --up
-                </code>
-                ，确保该服务器管理端口对本机放行即可。
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-[12px] text-[#98A1B0]">远端控制面地址</label>
+                <Input
+                  className="tabular"
+                  value={peerURL}
+                  onChange={(e) => setPeerURL(e.target.value)}
+                  placeholder="http://服务器IP:18080"
+                />
               </div>
+              <div className="space-y-1">
+                <label className="text-[12px] text-[#98A1B0]">
+                  集群密钥（留空自动同本机）
+                </label>
+                <Input
+                  type="password"
+                  className="tabular"
+                  value={peerToken}
+                  onChange={(e) => setPeerToken(e.target.value)}
+                  placeholder="通常留空即可"
+                />
+              </div>
+            </div>
+
+            {/* Live Copyable One-Click Install Command for the New VPS */}
+            <div className="rounded-md border border-[#232730] bg-[#0B0D10] overflow-hidden">
+              <div className="flex items-center justify-between border-b border-[#1B1F27] bg-[#13161B] px-3 py-1.5">
+                <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#D3D8E0]">
+                  <Terminal className="h-3.5 w-3.5 text-[#8B94A5]" />
+                  新服务器一键接入命令（已自动填入 IP 与集群密钥）
+                </span>
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  onClick={() => void copyText("modal-cmd", "新服务器接入命令", livePeerInstallCmd)}
+                >
+                  {copiedKey === "modal-cmd" ? (
+                    <Check className="h-3 w-3 text-[#4ADE80]" />
+                  ) : (
+                    <Copy className="h-3 w-3" />
+                  )}
+                  {copiedKey === "modal-cmd" ? "已复制" : "一键复制"}
+                </Button>
+              </div>
+              <pre className="p-3 font-mono text-[11px] leading-relaxed text-[#B8C0CE] whitespace-pre-wrap break-all select-all m-0">
+                {livePeerInstallCmd}
+              </pre>
             </div>
           </div>
 

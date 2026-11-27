@@ -162,9 +162,9 @@ fi
 
 if [[ "$BRING_UP" -eq 1 ]]; then
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    echo "[srt-cam] UFW 已启用，自动放行 10 路 SRT 端口 (UDP 11111:11120, 21111:21120) 及控制端口 (TCP ${LISTEN_PORT})"
-    ufw allow 11111:11120/udp >/dev/null
-    ufw allow 21111:21120/udp >/dev/null
+    echo "[srt-cam] UFW 已启用，自动放行 10 路 SRT 端口 (UDP 20001:20010, 21001:21010) 及控制端口 (TCP ${LISTEN_PORT})"
+    ufw allow 20001:20010/udp >/dev/null
+    ufw allow 21001:21010/udp >/dev/null
     ufw allow "${LISTEN_PORT}/tcp" >/dev/null
   fi
   echo "[srt-cam] 启动全部 10 路 SRT 中转通道 (srt-cam1..10)..."
@@ -187,11 +187,11 @@ cat <<EOF
   - Cluster Token: ${CLUSTER_TOKEN}  (多台 VPS 互通时填相同 Token)
 
 如需手动启动 10 路中转通道与控制台（或直接加 --up 参数一键拉起）：
-  # 1. 启动全部 10 路 SRT 中转容器 (推流 UDP 21111-21120 / 拉流 UDP 11111-11120)
+  # 1. 启动全部 10 路 SRT 中转容器 (推流 UDP 20001-20010 / 拉流 UDP 21001-21010)
   docker compose -f deploy/docker-compose.v2.yml up -d --build
 
   # 2. 如本机开启 UFW 防火墙，记得放行端口（云厂商安全组同样需要放行）
-  ufw allow 11111:11120/udp && ufw allow 21111:21120/udp && ufw allow ${LISTEN_PORT}/tcp
+  ufw allow 20001:20010/udp && ufw allow 21001:21010/udp && ufw allow ${LISTEN_PORT}/tcp
 
   # 3. 启动控制面 srt-camd
   mkdir -p /var/lib/srt-cam
