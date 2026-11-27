@@ -685,15 +685,15 @@ export function MonitorPage({
                           unit="Mb/s"
                         />
                         <KpiCell
-                          label="视频帧率"
+                          label="视频"
                           value={activeFps.text}
-                          title={activeFps.tooltip}
+                          sub={activeFps.metaText}
                         />
                         <KpiCell
                           label="音频"
                           value={activeAudio.text}
+                          sub={activeAudio.metaText}
                           tone={activeAudio.tone === "warn" ? "warn" : "neutral"}
-                          title={activeAudio.tooltip}
                         />
                         <KpiCell
                           label="丢包率"
@@ -705,7 +705,6 @@ export function MonitorPage({
                               ? "warn"
                               : "neutral"
                           }
-                          title={activeLoss.detail}
                         />
                         <KpiCell
                           label="往返时延"
@@ -982,29 +981,24 @@ export function MonitorPage({
                             </div>
                           )}
 
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openInWorkbench(g.id);
-                                }}
-                                className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] text-[#7C8596] hover:bg-[#1F2430] hover:text-[#F1F3F6] transition-colors cursor-pointer"
-                              >
-                                详情
-                                <ArrowUpRight className="h-3 w-3" />
-                              </button>
-                            </TooltipTrigger>
-                            <TooltipContent>打开工作台查看曲线、四层排障与日志（也可双击画面）</TooltipContent>
-                          </Tooltip>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openInWorkbench(g.id);
+                            }}
+                            className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] text-[#7C8596] hover:bg-[#1F2430] hover:text-[#F1F3F6] transition-colors cursor-pointer"
+                          >
+                            详情
+                            <ArrowUpRight className="h-3 w-3" />
+                          </button>
                         </div>
                       </div>
 
-                      {/* Row 2: OBS-Style Crisp 5-Column Telemetry Strip (码率 / 帧率 / 音频 / 丢包率 / 时延) */}
+                      {/* Row 2: OBS-Style Crisp 5-Column Direct Telemetry Strip (码率 / 视频 / 音频 / 丢包率 / 时延) */}
                       <div
                         data-testid="wall-telemetry-strip"
-                        className="shrink-0 grid grid-cols-5 divide-x divide-[#1C2029] border-t border-[#1A1E26] bg-[#0D0F13]"
+                        className="shrink-0 grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.75fr)_minmax(0,1.5fr)_minmax(0,0.8fr)_minmax(0,0.65fr)] divide-x divide-[#1C2029] border-t border-[#1A1E26] bg-[#0D0F13]"
                       >
                         <WallMetricCell
                           label="码率"
@@ -1013,19 +1007,18 @@ export function MonitorPage({
                           compact={compactWallTile}
                         />
                         <WallMetricCell
-                          label="帧率"
-                          value={fps.text}
+                          label="视频"
+                          value={compactWallTile ? fps.compactFullText : fps.fullText}
                           tone={
                             fps.text !== "-" && fps.text !== "探测中"
                               ? "active"
                               : "idle"
                           }
-                          tooltip={fps.tooltip}
                           compact={compactWallTile}
                         />
                         <WallMetricCell
                           label="音频"
-                          value={audio.text}
+                          value={compactWallTile ? audio.compactFullText : audio.fullText}
                           tone={
                             audio.tone === "warn"
                               ? "warn"
@@ -1033,7 +1026,6 @@ export function MonitorPage({
                               ? "active"
                               : "idle"
                           }
-                          tooltip={audio.tooltip}
                           compact={compactWallTile}
                         />
                         <WallMetricCell
@@ -1048,7 +1040,6 @@ export function MonitorPage({
                               ? "ok"
                               : "idle"
                           }
-                          tooltip={loss.detail}
                           compact={compactWallTile}
                         />
                         <WallMetricCell
@@ -1104,13 +1095,11 @@ function WallMetricCell({
   label,
   value,
   tone = "idle",
-  tooltip,
   compact = false,
 }: {
   label: string;
   value: string;
   tone?: "active" | "ok" | "warn" | "crit" | "idle";
-  tooltip?: string;
   compact?: boolean;
 }) {
   const valCls =
@@ -1124,7 +1113,7 @@ function WallMetricCell({
       ? "text-[#E6E9EF]"
       : "text-[#636C7C]";
 
-  const content = (
+  return (
     <div className={cn("min-w-0", compact ? "px-1.5 py-1" : "px-2 py-1.5")}>
       <div
         className={cn(
@@ -1144,14 +1133,6 @@ function WallMetricCell({
         {value}
       </div>
     </div>
-  );
-
-  if (!tooltip) return content;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{content}</TooltipTrigger>
-      <TooltipContent className="max-w-[320px] whitespace-pre-line">{tooltip}</TooltipContent>
-    </Tooltip>
   );
 }
 
@@ -1184,17 +1165,17 @@ function KpiCell({
   label,
   value,
   unit,
+  sub,
   tone = "neutral",
-  title,
 }: {
   label: string;
   value: string;
   unit?: string;
+  sub?: string;
   tone?: "neutral" | "warn" | "crit";
-  title?: string;
 }) {
   return (
-    <div title={title}>
+    <div className="min-w-0">
       <div className="text-[11px] text-[#757E8F]">{label}</div>
       <div className="mt-0.5 flex items-baseline gap-1">
         <span
@@ -1211,6 +1192,11 @@ function KpiCell({
         </span>
         {unit && <span className="text-[11.5px] text-[#7C8596]">{unit}</span>}
       </div>
+      {sub && (
+        <div className="tabular mt-1 truncate text-[10.5px] text-[#7C8596] leading-tight">
+          {sub}
+        </div>
+      )}
     </div>
   );
 }

@@ -146,41 +146,107 @@ export function formatPct(part: number, total: number): string {
   return pct >= 10 ? `${pct.toFixed(1)}%` : `${pct.toFixed(2)}%`;
 }
 
-export function formatVideoFps(leg?: LegLiveView): { text: string; tooltip: string } {
-  if (!leg || !leg.node_online) return { text: "-", tooltip: "未检测到视频流" };
+function formatAudioChannelsLabel(ch?: string): string {
+  const v = (ch || "").trim().toLowerCase();
+  if (!v) return "";
+  if (v === "stereo") return "立体声";
+  if (v === "mono") return "单声道";
+  return ch!.trim();
+}
+
+function compactResolution(res?: string): string {
+  const v = (res || "").trim().toLowerCase();
+  if (v === "3840x2160") return "4K";
+  if (v === "1920x1080") return "1080p";
+  if (v === "1280x720") return "720p";
+  return (res || "").trim();
+}
+
+export function formatVideoFps(leg?: LegLiveView): {
+  text: string;
+  fullText: string;
+  compactFullText: string;
+  metaText: string;
+  tooltip: string;
+} {
+  if (!leg || !leg.node_online) {
+    return { text: "-", fullText: "-", compactFullText: "-", metaText: "", tooltip: "未检测到视频流" };
+  }
   const s = leg.sample;
   if (!s.src_connected || s.src_mbps < 0.1) {
-    return { text: "-", tooltip: "当前无视频信号" };
+    return { text: "-", fullText: "-", compactFullText: "-", metaText: "", tooltip: "当前无视频信号" };
   }
   if (leg.mode === "udp-passthrough" || s.encrypted) {
-    return { text: "-", tooltip: "加密透传模式不解密视频载荷，无法探测帧率" };
+    return {
+      text: "-",
+      fullText: "-",
+      compactFullText: "-",
+      metaText: "",
+      tooltip: "加密透传模式不解密视频载荷，无法探测帧率",
+    };
   }
   const fps = s.video_fps ?? 0;
   if (fps <= 0) {
-    return { text: "探测中", tooltip: "正在随缩略图探测视频帧率与分辨率" };
+    return {
+      text: "探测中",
+      fullText: "探测中",
+      compactFullText: "探测中",
+      metaText: "",
+      tooltip: "正在随缩略图探测视频帧率与分辨率",
+    };
   }
   const fpsNum = Math.abs(fps - Math.round(fps)) < 0.05 ? String(Math.round(fps)) : fps.toFixed(2);
-  const parts = [s.video_resolution, s.video_codec, `${fpsNum} fps`].filter(Boolean);
+  const metaParts = [s.video_resolution, s.video_codec].filter(Boolean);
+  const metaText = metaParts.join(" · ");
+  const fullParts = [...metaParts, `${fpsNum} fps`];
+  const compactParts = [compactResolution(s.video_resolution), s.video_codec, `${fpsNum}fps`].filter(Boolean);
   return {
     text: `${fpsNum} fps`,
-    tooltip: parts.join(" · "),
+    fullText: fullParts.join(" · "),
+    compactFullText: compactParts.join(" · "),
+    metaText,
+    tooltip: fullParts.join(" · "),
   };
 }
 
 export function formatAudioSummary(leg?: LegLiveView): {
   text: string;
+  fullText: string;
+  compactFullText: string;
+  metaText: string;
   tone: BroadcastTone;
   tooltip: string;
 } {
   if (!leg || !leg.node_online) {
-    return { text: "-", tone: "idle", tooltip: "未检测到音频流" };
+    return {
+      text: "-",
+      fullText: "-",
+      compactFullText: "-",
+      metaText: "",
+      tone: "idle",
+      tooltip: "未检测到音频流",
+    };
   }
   const s = leg.sample;
   if (s.fault_code === "STREAM_STOPPED" || !s.src_connected || s.src_mbps < 0.1) {
-    return { text: "-", tone: "idle", tooltip: "当前无音视频信号" };
+    return {
+      text: "-",
+      fullText: "-",
+      compactFullText: "-",
+      metaText: "",
+      tone: "idle",
+      tooltip: "当前无音视频信号",
+    };
   }
   if (leg.mode === "udp-passthrough" || s.encrypted) {
-    return { text: "-", tone: "idle", tooltip: "加密透传模式不解密载荷，无法读取音频采样率与码率" };
+    return {
+      text: "-",
+      fullText: "-",
+      compactFullText: "-",
+      metaText: "",
+      tone: "idle",
+      tooltip: "加密透传模式不解密载荷，无法读取音频采样率与码率",
+    };
   }
 
   const rate = s.audio_sample_rate ?? 0;
@@ -192,11 +258,21 @@ export function formatAudioSummary(leg?: LegLiveView): {
     if (videoProbed) {
       return {
         text: "无音轨",
+        fullText: "无音轨",
+        compactFullText: "无音轨",
+        metaText: "",
         tone: "warn",
         tooltip: "已检测到视频画面，但流中未发现音轨（请检查编码器音频开关）",
       };
     }
-    return { text: "探测中", tone: "idle", tooltip: "正在随缩略图探测音频采样率与码率" };
+    return {
+      text: "探测中",
+      fullText: "探测中",
+      compactFullText: "探测中",
+      metaText: "",
+      tone: "idle",
+      tooltip: "正在随缩略图探测音频采样率与码率",
+    };
   }
 
   const rateText =
@@ -207,6 +283,7 @@ export function formatAudioSummary(leg?: LegLiveView): {
       : "";
   const kbpsText = kbps > 0 ? `${kbps}k` : "";
   const trackSuffix = tracks > 1 ? ` ×${tracks}` : "";
+  const chLabel = formatAudioChannelsLabel(s.audio_channels);
 
   let text = "-";
   if (rateText && kbpsText) {
@@ -219,18 +296,32 @@ export function formatAudioSummary(leg?: LegLiveView): {
     text = `${s.audio_codec}${trackSuffix}`;
   }
 
+  const compactParts = [
+    s.audio_codec,
+    rateText,
+    kbpsText ? `${kbpsText}${trackSuffix}` : "",
+  ].filter(Boolean);
+  if (!kbpsText && trackSuffix && compactParts.length > 0) {
+    compactParts[compactParts.length - 1] += trackSuffix;
+  }
+  const compactFullText = compactParts.length > 0 ? compactParts.join(" · ") : text;
+  const fullText = chLabel ? `${compactFullText} · ${chLabel}` : compactFullText;
+  const metaText = [s.audio_codec, chLabel, tracks > 1 ? `${tracks}音轨` : ""]
+    .filter(Boolean)
+    .join(" · ");
+
   const tooltip =
     s.audio_detail ||
     [
       s.audio_codec,
       rate > 0 ? (rate % 1000 === 0 ? `${rate / 1000} kHz` : `${(rate / 1000).toFixed(1)} kHz`) : "",
-      s.audio_channels,
+      chLabel,
       kbps > 0 ? `${kbps} kb/s` : "码率未上报(VBR)",
     ]
       .filter(Boolean)
       .join(" · ");
 
-  return { text, tone: "ok", tooltip };
+  return { text, fullText, compactFullText, metaText, tone: "ok", tooltip };
 }
 
 export interface ChannelLossSummary {
