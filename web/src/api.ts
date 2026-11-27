@@ -1,11 +1,15 @@
 import type {
+  AlertConfigUpdate,
+  AlertConfigView,
   AuditEntry,
   AuthStatus,
   ChannelLogsResponse,
   EventSheet,
   FaultEvent,
   GroupTimelineResponse,
+  LegLiveView,
   OverviewResponse,
+  SignalGroupLiveView,
 } from "./types";
 
 async function reqJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -69,6 +73,12 @@ export const api = {
       `/api/v1/channels/${encodeURIComponent(nodeId)}/${encodeURIComponent(channelId)}/logs?tail=${tail}&hide_stats=${hideStats ? "1" : "0"}`
     ),
   auditLogs: () => reqJSON<{ entries: AuditEntry[] }>("/api/v1/audit"),
+  getAlertConfig: () => reqJSON<AlertConfigView>("/api/v1/alerts/config"),
+  saveAlertConfig: (payload: AlertConfigUpdate) =>
+    reqJSON<AlertConfigView>("/api/v1/alerts/config", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
   testFeishu: () => reqJSON<{ ok: boolean }>("/api/v1/alerts/test", { method: "POST" }),
 };
 
@@ -121,31 +131,86 @@ export function resolveNodeHost(nodes: { node_id: string; public_ip: string }[],
 
 export function auditActionText(action: string): string {
   switch (action) {
+    case "safe_single_restart":
     case "restart_channel":
       return "重置信号通道";
     case "update_event_sheet":
       return "保存通道配置";
     case "toggle_expected_active":
-      return "切换告警监控";
+      return "切换断流告警";
+    case "update_alert_config":
+      return "修改告警设置";
+    case "test_feishu_alert":
     case "test_feishu":
-      return "测试飞书通知";
+      return "发送测试飞书";
     default:
       return action;
   }
 }
 
-export function severityText(sev: string): { label: string; cls: string; dot: string } {
+export function faultLayerLabel(layer: string): string {
+  switch (layer) {
+    case "upstream":
+      return "推流段";
+    case "downstream":
+      return "拉流段";
+    case "cloud":
+      return "中转服务器";
+    case "tunnel":
+      return "转发隧道";
+    default:
+      return "整路";
+  }
+}
+
+export type BroadcastTone = "ok" | "warn" | "crit" | "idle";
+
+export function isGroupAwaitingDownstream(g: SignalGroupLiveView): boolean {
+  return (
+    g.expected_active &&
+    g.severity === "CRITICAL_OUTAGE" &&
+    g.legs.length > 0 &&
+    g.legs.every((l) => l.node_online && l.sample.fault_code === "DOWNSTREAM_OFFLINE")
+  );
+}
+
+export function groupStatusMeta(g: SignalGroupLiveView): { label: string; tone: BroadcastTone } {
+  if (isGroupAwaitingDownstream(g)) {
+    return { label: "待拉流", tone: "warn" };
+  }
+  return severityMeta(g.severity);
+}
+
+export function severityMeta(sev: string): { label: string; tone: BroadcastTone } {
   switch (sev) {
     case "HEALTHY":
-      return { label: "正常在播", cls: "pill-ok", dot: "dot-ok" };
+      return { label: "正常在播", tone: "ok" };
     case "DEGRADED_PROTECTED":
-      return { label: "备路接管", cls: "pill-warn", dot: "dot-warn" };
+      return { label: "备路接管", tone: "warn" };
     case "DEGRADED_SINGLE":
-      return { label: "信号波动", cls: "pill-warn", dot: "dot-warn" };
+      return { label: "信号波动", tone: "warn" };
     case "CRITICAL_OUTAGE":
-      return { label: "信号中断", cls: "pill-crit", dot: "dot-crit" };
+      return { label: "信号中断", tone: "crit" };
     default:
-      return { label: "待机", cls: "pill-idle", dot: "dot-idle" };
+      return { label: "待机", tone: "idle" };
+  }
+}
+
+export function legTone(leg: LegLiveView): BroadcastTone {
+  if (!leg.node_online) return "crit";
+  switch (leg.sample.fault_code) {
+    case "HEALTHY":
+      return "ok";
+    case "IDLE_EXPECTED_OFF":
+      return "idle";
+    case "DOWNSTREAM_OFFLINE":
+      return "warn";
+    case "UPSTREAM_OFFLINE":
+    case "CLOUD_PROCESS_DOWN":
+    case "NODE_UNREACHABLE":
+      return "crit";
+    default:
+      return "warn";
   }
 }
 

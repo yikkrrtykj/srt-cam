@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
-import type { LegLiveView } from "../types";
+import type { LegLiveView } from "@/types";
+import { cn } from "@/lib/utils";
 
 interface Props {
   leg: LegLiveView;
   label: string;
-  size?: "sm" | "md";
+  variant?: "mini" | "hero" | "wall";
+  className?: string;
 }
 
-export function RouteThumbnail({ leg, label, size = "sm" }: Props) {
+export function RouteThumbnail({ leg, label, variant = "mini", className }: Props) {
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
-  // Refresh keyframe thumbnail every 5 seconds
   useEffect(() => {
     const timer = window.setInterval(() => {
       setTick((t) => t + 1);
@@ -70,27 +71,60 @@ export function RouteThumbnail({ leg, label, size = "sm" }: Props) {
     };
   }, [leg.node_id, leg.channel_id, flowing, label, tick]);
 
-  const cls = size === "md" ? "hv-thumb hv-thumb-md" : "hv-thumb";
+  const sizeCls =
+    variant === "mini"
+      ? "w-[68px] h-[38px] rounded-[4px]"
+      : variant === "hero"
+      ? "w-[196px] h-[110px] rounded-md"
+      : "w-full aspect-video rounded-none";
 
-  if (imgSrc) {
-    return (
-      <div className={cls}>
-        <img src={imgSrc} alt={`${label} 画面预览`} />
-      </div>
-    );
-  }
-
-  // Clean fallback monitor tile when no real preview source is configured (HTTP 204)
   return (
-    <div className={`${cls} hv-thumb-fallback`}>
-      {!flowing ? (
-        <span className="hv-thumb-tag mono">
-          {s.fault_code === "IDLE_EXPECTED_OFF" ? "STANDBY" : "NO SIGNAL"}
-        </span>
-      ) : s.encrypted ? (
-        <span className="hv-thumb-tag hv-thumb-enc mono">AES</span>
+    <div
+      className={cn(
+        "relative shrink-0 overflow-hidden bg-[#14171D] flex items-center justify-center select-none",
+        variant !== "wall" && "border border-[#262B35]",
+        sizeCls,
+        className
+      )}
+    >
+      {imgSrc ? (
+        <img
+          src={imgSrc}
+          alt={`${label} 画面预览`}
+          className="h-full w-full object-cover"
+          loading="lazy"
+        />
       ) : (
-        <span className="hv-thumb-tag hv-thumb-live mono">{s.src_mbps.toFixed(1)}M</span>
+        <div className="flex flex-col items-center justify-center gap-1 text-center px-2">
+          {!flowing ? (
+            <span
+              className={cn(
+                "tabular font-medium tracking-wider text-[#5A6373]",
+                variant === "mini" ? "text-[9px]" : variant === "wall" ? "text-[11px]" : "text-[10.5px]"
+              )}
+            >
+              {s.fault_code === "IDLE_EXPECTED_OFF" ? "STANDBY" : "NO SIGNAL"}
+            </span>
+          ) : s.encrypted ? (
+            <span
+              className={cn(
+                "tabular font-medium tracking-wider text-[#98A1B0]",
+                variant === "mini" ? "text-[9.5px]" : "text-[11px]"
+              )}
+            >
+              AES · {s.src_mbps.toFixed(1)}M
+            </span>
+          ) : (
+            <span
+              className={cn(
+                "tabular font-medium tracking-wider text-[#98A1B0]",
+                variant === "mini" ? "text-[9.5px]" : "text-[11px]"
+              )}
+            >
+              LIVE · {s.src_mbps.toFixed(1)}M
+            </span>
+          )}
+        </div>
       )}
     </div>
   );

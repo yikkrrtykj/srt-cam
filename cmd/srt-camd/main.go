@@ -104,6 +104,22 @@ func main() {
 		}
 		return snap.Data, snap.ContentType, true
 	})
+	srv.SetAlertConfigCallback(*cfgPath != "", func(feishu config.FeishuConfig, th config.ThresholdConfig) error {
+		if *cfgPath != "" {
+			diskCfg, err := config.LoadNodeConfig(*cfgPath)
+			if err != nil {
+				diskCfg = cfg
+			}
+			diskCfg.Feishu = feishu
+			diskCfg.Thresholds = th
+			if err := config.SaveNodeConfig(*cfgPath, diskCfg); err != nil {
+				return err
+			}
+		}
+		alertMgr.UpdateConfig(feishu)
+		col.UpdateThresholds(th)
+		return nil
+	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

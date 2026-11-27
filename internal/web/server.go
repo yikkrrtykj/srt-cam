@@ -81,18 +81,58 @@ type ChannelLogsResponse struct {
 	Lines      []LogLine `json:"lines"`
 }
 
+// FeishuConfigView returns sanitized Feishu alert settings (never exposes raw webhook token or secret).
+type FeishuConfigView struct {
+	Enabled           bool   `json:"enabled"`
+	WebhookMasked     string `json:"webhook_masked"`
+	WebhookConfigured bool   `json:"webhook_configured"`
+	SecretConfigured  bool   `json:"secret_configured"`
+	DebounceSec       int    `json:"debounce_sec"`
+	CooldownSec       int    `json:"cooldown_sec"`
+	WatchdogSec       int    `json:"watchdog_sec"`
+	DashboardBaseURL  string `json:"dashboard_base_url"`
+}
+
+// AlertConfigView is returned by GET /api/v1/alerts/config.
+type AlertConfigView struct {
+	Feishu     FeishuConfigView       `json:"feishu"`
+	Thresholds config.ThresholdConfig `json:"thresholds"`
+	Persistent bool                   `json:"persistent"`
+}
+
+// AlertConfigUpdate is the payload accepted by PUT /api/v1/alerts/config.
+type AlertConfigUpdate struct {
+	Feishu struct {
+		Enabled          bool   `json:"enabled"`
+		WebhookURL       string `json:"webhook_url"`
+		ClearWebhook     bool   `json:"clear_webhook,omitempty"`
+		Secret           string `json:"secret"`
+		ClearSecret      bool   `json:"clear_secret,omitempty"`
+		DebounceSec      int    `json:"debounce_sec"`
+		CooldownSec      int    `json:"cooldown_sec"`
+		WatchdogSec      int    `json:"watchdog_sec"`
+		DashboardBaseURL string `json:"dashboard_base_url"`
+	} `json:"feishu"`
+	Thresholds config.ThresholdConfig `json:"thresholds"`
+}
+
+// AlertConfigUpdateFunc persists and hot-reloads updated Feishu & threshold settings.
+type AlertConfigUpdateFunc func(feishu config.FeishuConfig, thresholds config.ThresholdConfig) error
+
 // Server serves authenticated dashboard REST/SSE APIs, peer cluster APIs, and the embedded SPA.
 type Server struct {
-	cfg         config.NodeConfig
-	events      *config.EventStore
-	store       *storage.Store
-	authMgr     *auth.Manager
-	clusterMgr  *cluster.Manager
-	restartFn   RestartFunc
-	logsFn      LogsFunc
-	thumbnailFn ThumbnailFunc
-	testFeishu  func(ctx context.Context) error
-	staticFS    fs.FS
+	cfg             config.NodeConfig
+	events          *config.EventStore
+	store           *storage.Store
+	authMgr         *auth.Manager
+	clusterMgr      *cluster.Manager
+	restartFn       RestartFunc
+	logsFn          LogsFunc
+	thumbnailFn     ThumbnailFunc
+	testFeishu      func(ctx context.Context) error
+	alertPersist    bool
+	onAlertConfigFn AlertConfigUpdateFunc
+	staticFS        fs.FS
 
 	mu       sync.RWMutex
 	local    model.NodeLiveStatus
@@ -134,6 +174,14 @@ func (s *Server) SetLogsFunc(fn LogsFunc) {
 // SetThumbnailFunc attaches the local keyframe thumbnail fetcher used by UI cards and peer proxy.
 func (s *Server) SetThumbnailFunc(fn ThumbnailFunc) {
 	s.thumbnailFn = fn
+}
+
+// SetAlertConfigCallback attaches a persistence and hot-reload hook for PUT /api/v1/alerts/config.
+func (s *Server) SetAlertConfigCallback(persistent bool, fn AlertConfigUpdateFunc) {
+	s.mu.Lock()
+	s.alertPersist = persistent
+	s.onAlertConfigFn = fn
+	s.mu.Unlock()
 }
 
 // UpdateSnapshot stores the latest aggregated snapshot and notifies connected SSE browsers.
@@ -274,6 +322,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/channels/{nodeID}/{channelID}/logs", s.withAuth(s.handleChannelLogs))
 	mux.HandleFunc("GET /api/v1/channels/{nodeID}/{channelID}/thumbnail", s.withAuth(s.handleChannelThumbnail))
 	mux.HandleFunc("GET /api/v1/audit", s.withAuth(s.handleAudit))
+	mux.HandleFunc("GET /api/v1/alerts/config", s.withAuth(s.handleGetAlertConfig))
+	mux.HandleFunc("PUT /api/v1/alerts/config", s.withAuth(s.handlePutAlertConfig))
 	mux.HandleFunc("POST /api/v1/alerts/test", s.withAuth(s.handleTestAlert))
 
 	// Peer VPS Cluster APIs (Bearer cluster_token)
@@ -619,12 +669,159 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
 }
 
-func (s *Server) handleTestAlert(w http.ResponseWriter, r *http.Request, user string) {
-	if s.testFeishu == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "飞书 Webhook 未启用，请在 config.json 中开启 feishu.enabled"})
+func maskWebhookURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	idx := strings.LastIndex(trimmed, "/")
+	if idx < 0 || idx >= len(trimmed)-1 {
+		if len(trimmed) <= 8 {
+			return "****"
+		}
+		return trimmed[:4] + "****" + trimmed[len(trimmed)-4:]
+	}
+	prefix := trimmed[:idx+1]
+	token := trimmed[idx+1:]
+	if len(token) <= 6 {
+		return prefix + "****"
+	}
+	return prefix + "****" + token[len(token)-6:]
+}
+
+func (s *Server) buildAlertConfigViewLocked() AlertConfigView {
+	f := s.cfg.Feishu
+	return AlertConfigView{
+		Feishu: FeishuConfigView{
+			Enabled:           f.Enabled,
+			WebhookMasked:     maskWebhookURL(f.WebhookURL),
+			WebhookConfigured: strings.TrimSpace(f.WebhookURL) != "",
+			SecretConfigured:  strings.TrimSpace(f.Secret) != "",
+			DebounceSec:       f.DebounceSec,
+			CooldownSec:       f.CooldownSec,
+			WatchdogSec:       f.WatchdogSec,
+			DashboardBaseURL:  f.DashboardBaseURL,
+		},
+		Thresholds: s.cfg.Thresholds,
+		Persistent: s.alertPersist,
+	}
+}
+
+func (s *Server) handleGetAlertConfig(w http.ResponseWriter, r *http.Request, _ string) {
+	s.mu.RLock()
+	view := s.buildAlertConfigViewLocked()
+	s.mu.RUnlock()
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handlePutAlertConfig(w http.ResponseWriter, r *http.Request, user string) {
+	var body AlertConfigUpdate
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无效 JSON 格式：" + err.Error()})
 		return
 	}
-	if err := s.testFeishu(r.Context()); err != nil {
+
+	s.mu.RLock()
+	nextFeishu := s.cfg.Feishu
+	nextTh := s.cfg.Thresholds
+	onUpdate := s.onAlertConfigFn
+	s.mu.RUnlock()
+
+	nextFeishu.Enabled = body.Feishu.Enabled
+	if body.Feishu.ClearWebhook {
+		nextFeishu.WebhookURL = ""
+	} else if u := strings.TrimSpace(body.Feishu.WebhookURL); u != "" {
+		if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "飞书 Webhook 地址必须以 https:// 或 http:// 开头"})
+			return
+		}
+		nextFeishu.WebhookURL = u
+	}
+	if body.Feishu.ClearSecret {
+		nextFeishu.Secret = ""
+	} else if sec := strings.TrimSpace(body.Feishu.Secret); sec != "" {
+		nextFeishu.Secret = sec
+	}
+	if body.Feishu.DebounceSec > 0 {
+		if body.Feishu.DebounceSec > 600 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "持续防抖时长需在 1 ~ 600 秒之间"})
+			return
+		}
+		nextFeishu.DebounceSec = body.Feishu.DebounceSec
+	}
+	if body.Feishu.CooldownSec > 0 {
+		if body.Feishu.CooldownSec < 10 || body.Feishu.CooldownSec > 86400 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "重复提醒间隔需在 10 ~ 86400 秒之间"})
+			return
+		}
+		nextFeishu.CooldownSec = body.Feishu.CooldownSec
+	}
+	if body.Feishu.WatchdogSec > 0 {
+		if body.Feishu.WatchdogSec < 5 || body.Feishu.WatchdogSec > 600 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "备节点接管超时需在 5 ~ 600 秒之间"})
+			return
+		}
+		nextFeishu.WatchdogSec = body.Feishu.WatchdogSec
+	}
+	nextFeishu.DashboardBaseURL = strings.TrimRight(strings.TrimSpace(body.Feishu.DashboardBaseURL), "/")
+
+	if nextFeishu.Enabled && strings.TrimSpace(nextFeishu.WebhookURL) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "启用飞书告警前请先填写 Webhook 地址"})
+		return
+	}
+
+	if body.Thresholds.MinFlowMbps > 0 {
+		nextTh.MinFlowMbps = body.Thresholds.MinFlowMbps
+	}
+	if body.Thresholds.HighRTTMs > 0 {
+		nextTh.HighRTTMs = body.Thresholds.HighRTTMs
+	}
+	if body.Thresholds.HighLossPerSample >= 0 {
+		nextTh.HighLossPerSample = body.Thresholds.HighLossPerSample
+	}
+	if body.Thresholds.HighRetrans >= 0 {
+		nextTh.HighRetrans = body.Thresholds.HighRetrans
+	}
+	if body.Thresholds.HighNAKLost >= 0 {
+		nextTh.HighNAKLost = body.Thresholds.HighNAKLost
+	}
+	if body.Thresholds.UDPBufDropTrigger >= 0 {
+		nextTh.UDPBufDropTrigger = body.Thresholds.UDPBufDropTrigger
+	}
+
+	if onUpdate != nil {
+		if err := onUpdate(nextFeishu, nextTh); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "保存告警配置失败：" + err.Error()})
+			return
+		}
+	}
+
+	s.mu.Lock()
+	s.cfg.Feishu = nextFeishu
+	s.cfg.Thresholds = nextTh
+	s.testFeishu = NewFeishuTestFunc(s.cfg)
+	view := s.buildAlertConfigViewLocked()
+	s.mu.Unlock()
+
+	_ = s.store.InsertAudit(r.Context(), model.AuditEntry{
+		Username: user,
+		NodeID:   s.cfg.NodeID,
+		Action:   "update_alert_config",
+		Target:   "feishu",
+		Detail:   fmt.Sprintf("更新告警配置（飞书=%v，防抖=%ds，冷却=%ds，高时延=%.0fms）", nextFeishu.Enabled, nextFeishu.DebounceSec, nextFeishu.CooldownSec, nextTh.HighRTTMs),
+	})
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleTestAlert(w http.ResponseWriter, r *http.Request, user string) {
+	s.mu.RLock()
+	testFn := s.testFeishu
+	s.mu.RUnlock()
+	if testFn == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "飞书通知未开启或未配置 Webhook 地址，请先开启并保存配置"})
+		return
+	}
+	if err := testFn(r.Context()); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "飞书推送失败：" + err.Error()})
 		return
 	}

@@ -211,6 +211,26 @@ func LoadNodeConfig(path string) (NodeConfig, error) {
 	return cfg, nil
 }
 
+// SaveNodeConfig atomically writes NodeConfig to disk with 0600 permissions.
+func SaveNodeConfig(path string, cfg NodeConfig) error {
+	if path == "" {
+		return nil
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // DefaultEventSheet returns a clean 10-channel default sheet matching existing srt-cam1..10.
 func DefaultEventSheet(nodeID string) EventSheet {
 	if nodeID == "" {
