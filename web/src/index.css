@@ -1454,20 +1454,25 @@ body,
   flex-shrink: 0;
 }
 
-/* Centered Minimal Haivision STATISTICS Block */
-.hv-stats-wrap {
-  margin-top: 18px;
-  display: flex;
-  justify-content: center;
+/* Haivision Dual-Column Source & Destination STATISTICS Grid */
+.hv-stats-grid {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
 }
 
 .hv-stats-card {
   width: 100%;
-  max-width: 480px;
+  min-width: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px 10px;
 }
 
 .hv-stats-rows {
-  padding: 8px 6px 0;
+  padding: 6px 2px 0;
   display: flex;
   flex-direction: column;
 }
@@ -1476,8 +1481,8 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 6px 8px;
+  gap: 12px;
+  padding: 5px 6px;
   border-bottom: 1px solid rgba(128, 140, 160, 0.10);
   font-size: 12px;
 }
@@ -1488,23 +1493,71 @@ body,
 
 .hv-stat-row > span {
   color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .hv-stat-row > strong {
   color: var(--text-primary);
   font-weight: 600;
   text-align: right;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hv-stat-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.hv-copy-btn {
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+
+.hv-copy-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.hv-url-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.hv-url-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .hv-stat-note {
-  margin-top: 8px;
-  padding: 6px 10px;
+  margin-top: 12px;
+  padding: 7px 12px;
   border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-  border-left: 2px solid var(--warn);
-  font-size: 11px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--warn);
+  font-size: 12px;
   color: var(--text-secondary);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .hv-stat-note.is-crit {
@@ -1534,7 +1587,8 @@ body,
   }
   .topo-grid,
   .health-flow-grid,
-  .hv-charts-grid {
+  .hv-charts-grid,
+  .hv-stats-grid {
     grid-template-columns: 1fr;
   }
   .topo-arrow,

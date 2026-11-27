@@ -74,8 +74,13 @@ type ChannelSample struct {
 	SrcLost       int64   `json:"src_lost"`
 	SrcRetrans    int64   `json:"src_retrans"`
 	SrcDropped    int64   `json:"src_dropped"`
+	SrcBelated    int64   `json:"src_belated,omitempty"`
+	SrcBytes      int64   `json:"src_bytes,omitempty"`
+	SrcBufMs      float64 `json:"src_buf_ms,omitempty"`
 	SrcTSBPDMs    float64 `json:"src_tsbpd_ms"`
 	SrcLinkBWMbps float64 `json:"src_link_bw_mbps,omitempty"`
+	SrcMaxBWMbps  float64 `json:"src_max_bw_mbps,omitempty"`
+	SrcReconnects int64   `json:"src_reconnects,omitempty"`
 	SrcPeerIP     string  `json:"src_peer_ip"`
 
 	// Layer 3: downstream (Cloud -> Receiver)
@@ -87,7 +92,11 @@ type ChannelSample struct {
 	DstRetrans    int64   `json:"dst_retrans"`
 	DstDropped    int64   `json:"dst_dropped"`
 	DstNAKCount   int64   `json:"dst_nak_count"`
+	DstBytes      int64   `json:"dst_bytes,omitempty"`
+	DstBufMs      float64 `json:"dst_buf_ms,omitempty"`
 	DstLinkBWMbps float64 `json:"dst_link_bw_mbps,omitempty"`
+	DstMaxBWMbps  float64 `json:"dst_max_bw_mbps,omitempty"`
+	DstReconnects int64   `json:"dst_reconnects,omitempty"`
 	DstPeerIP     string  `json:"dst_peer_ip"`
 
 	// Path metadata & telemetry quality

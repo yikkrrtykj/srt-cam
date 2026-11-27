@@ -80,6 +80,7 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
     );
     return relay?.id ?? overview.groups[0]?.id ?? null;
   });
+  const [selectedLegMap, setSelectedLegMap] = useState<Record<string, number>>({});
   const [restartTarget, setRestartTarget] = useState<RestartTarget | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [testingFeishu, setTestingFeishu] = useState(false);
@@ -120,7 +121,15 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
       const hay = [
         g.name,
         g.notes ?? "",
-        ...g.legs.flatMap((l) => [l.node_id, l.channel_id, l.carrier, l.src_device, l.dst_device]),
+        ...g.legs.flatMap((l) => [
+          l.node_id,
+          l.channel_id,
+          l.carrier,
+          l.src_device,
+          l.dst_device,
+          String(l.in_port),
+          String(l.out_port),
+        ]),
       ]
         .join(" ")
         .toLowerCase();
@@ -142,7 +151,7 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
     setToast(null);
     try {
       await api.testFeishu();
-      setToast({ kind: "ok", text: "飞书测试消息已发送" });
+      setToast({ kind: "ok", text: "飞书测试通知已发送" });
     } catch (err) {
       setToast({ kind: "err", text: err instanceof Error ? err.message : "发送失败" });
     } finally {
@@ -159,7 +168,7 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
         <div className={`notice ${toast.kind === "ok" ? "notice-ok" : "notice-err"}`}>{toast.text}</div>
       )}
 
-      {/* Compact Haivision-style Top Control Bar */}
+      {/* Compact Top Control Bar */}
       <div className="hv-toolbar">
         <div className="hv-toolbar-left">
           <div className="seg-group" role="tablist" aria-label="方向筛选">
@@ -195,8 +204,8 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
 
           <input
             className="input"
-            style={{ width: 190 }}
-            placeholder="搜索信号 / 节点..."
+            style={{ width: 205 }}
+            placeholder="搜索信号名 / 设备 / 端口..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -225,14 +234,17 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
         </div>
       </div>
 
-      {/* Haivision SRT Gateway Clean Route Card Stack */}
+      {/* Haivision SRT Gateway Clean Signal Card Stack */}
       <div className="hv-list">
         {filteredGroups.length === 0 ? (
           <div className="panel" style={{ padding: 28, textAlign: "center", color: "var(--text-muted)" }}>
-            无匹配路由
+            暂无匹配的信号通道
           </div>
         ) : (
           filteredGroups.map((grp) => {
+            const rawIdx = selectedLegMap[grp.id] ?? 0;
+            const safeIdx = rawIdx < grp.legs.length ? rawIdx : 0;
+            const activeLeg = grp.legs[safeIdx] ?? primaryDisplayLeg(grp);
             const leg = primaryDisplayLeg(grp);
             const awaitingDown = isAwaitingDownstream(grp);
             const sev = awaitingDown
@@ -248,7 +260,7 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
                 : s.src_dropped + s.dst_dropped
               : 0;
             const flowing = !!(leg?.node_online && s && s.src_mbps >= 0.1);
-            const protoText = isPass ? "TS over SRT (Pass)" : "TS over SRT";
+            const protoText = isPass ? "SRT 加密透传" : "SRT 中转";
             const endpointText = leg
               ? `${leg.node_id} :${leg.in_port}${!isPass ? `→:${leg.out_port}` : ""}`
               : "-";
@@ -284,7 +296,7 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
                   {/* 16:9 Live Keyframe Thumbnail */}
                   {leg && <RouteThumbnail leg={leg} label={grp.name} />}
 
-                  {/* Minimal 2-Line Haivision Route Identity */}
+                  {/* Minimal 2-Line Broadcast Signal Identity */}
                   <div className="hv-card-main">
                     <div className="hv-card-title-row">
                       <span className="hv-status-icon" style={{ color: statusColor }}>
@@ -300,7 +312,7 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
                       )}
                       {awaitingDown && (
                         <span className="hv-sub-tag" style={{ color: "var(--warn)" }}>
-                          入站正常 · 等待收端拉流
+                          推流正常 · 等待收端拉流
                         </span>
                       )}
                       {grp.protected_by && (
@@ -317,7 +329,7 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
                       {!isPass && s && s.src_rtt_ms > 0 && (
                         <>
                           <span className="hv-pipe">|</span>
-                          <span>{s.src_rtt_ms.toFixed(0)} ms</span>
+                          <span>时延 {s.src_rtt_ms.toFixed(0)} ms</span>
                         </>
                       )}
                       <span className="hv-pipe">|</span>
@@ -343,9 +355,9 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
                     </div>
                   </div>
 
-                  {/* Quiet Haivision Right Action Icons */}
+                  {/* Single Non-Redundant Action Strip */}
                   <div className="hv-card-actions" onClick={(e) => e.stopPropagation()}>
-                    <label className="switch" title={grp.expected_active ? "已开启飞书告警" : "待机（不触发告警）"}>
+                    <label className="switch" title={grp.expected_active ? "已开启飞书断流告警" : "待机中（不发送告警）"}>
                       <input
                         type="checkbox"
                         checked={grp.expected_active}
@@ -357,7 +369,7 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
                       type="button"
                       className={`hv-icon-btn ${isOpen ? "is-active" : ""}`}
                       title={isOpen ? "收起实时曲线与统计" : "展开实时曲线与统计"}
-                      aria-label="统计曲线"
+                      aria-label="展开或收起实时曲线"
                       onClick={() => setExpandedId(isOpen ? null : grp.id)}
                     >
                       <ChartIcon />
@@ -366,24 +378,24 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
                     <button
                       type="button"
                       className="hv-icon-btn"
-                      title="4层排障时间轴 / 原始日志 / 导出报告"
-                      aria-label="4层排障"
+                      title="查看信号详情、通信记录与导出报告"
+                      aria-label="信号详情与通信记录"
                       onClick={() => onOpenRoute(grp.id)}
                     >
                       <LayersIcon />
                     </button>
 
-                    {leg && (
+                    {activeLeg && (
                       <button
                         type="button"
                         className="hv-icon-btn"
-                        title={`安全重启 ${leg.node_id}/${leg.channel_id}`}
-                        aria-label="重启通道"
+                        title={`重置通道 ${activeLeg.channel_id}（${activeLeg.node_id}）`}
+                        aria-label="重置通道"
                         onClick={() =>
                           setRestartTarget({
-                            nodeId: leg.node_id,
-                            nodeName: leg.node_name,
-                            channelId: leg.channel_id,
+                            nodeId: activeLeg.node_id,
+                            nodeName: activeLeg.node_name,
+                            channelId: activeLeg.channel_id,
                             signalName: grp.name,
                           })
                         }
@@ -397,15 +409,11 @@ export function OverviewPage({ overview, theme, onOpenRoute, onRefresh }: Props)
                 {isOpen && (
                   <HaivisionDrawer
                     group={grp}
+                    nodes={overview.nodes}
                     theme={theme}
-                    onOpenTimeline={onOpenRoute}
-                    onRestartLeg={(targetLeg) =>
-                      setRestartTarget({
-                        nodeId: targetLeg.node_id,
-                        nodeName: targetLeg.node_name,
-                        channelId: targetLeg.channel_id,
-                        signalName: grp.name,
-                      })
+                    legIdx={safeIdx}
+                    onSelectLeg={(nextIdx) =>
+                      setSelectedLegMap((prev) => ({ ...prev, [grp.id]: nextIdx }))
                     }
                   />
                 )}

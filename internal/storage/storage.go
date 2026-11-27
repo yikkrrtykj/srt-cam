@@ -70,8 +70,13 @@ CREATE TABLE IF NOT EXISTS channel_samples (
 	src_lost INTEGER NOT NULL,
 	src_retrans INTEGER NOT NULL,
 	src_dropped INTEGER NOT NULL,
+	src_belated INTEGER NOT NULL DEFAULT 0,
+	src_bytes INTEGER NOT NULL DEFAULT 0,
+	src_buf_ms REAL NOT NULL DEFAULT 0,
 	src_tsbpd_ms REAL NOT NULL,
 	src_link_bw_mbps REAL NOT NULL DEFAULT 0,
+	src_max_bw_mbps REAL NOT NULL DEFAULT 0,
+	src_reconnects INTEGER NOT NULL DEFAULT 0,
 	src_peer_ip TEXT NOT NULL,
 	dst_connected INTEGER NOT NULL,
 	dst_mbps REAL NOT NULL,
@@ -81,7 +86,11 @@ CREATE TABLE IF NOT EXISTS channel_samples (
 	dst_retrans INTEGER NOT NULL,
 	dst_dropped INTEGER NOT NULL,
 	dst_nak_count INTEGER NOT NULL,
+	dst_bytes INTEGER NOT NULL DEFAULT 0,
+	dst_buf_ms REAL NOT NULL DEFAULT 0,
 	dst_link_bw_mbps REAL NOT NULL DEFAULT 0,
+	dst_max_bw_mbps REAL NOT NULL DEFAULT 0,
+	dst_reconnects INTEGER NOT NULL DEFAULT 0,
 	dst_peer_ip TEXT NOT NULL,
 	path_medium TEXT NOT NULL,
 	has_native_stats INTEGER NOT NULL,
@@ -148,12 +157,21 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_ts
 	if err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)
 	}
-	// Idempotent migrations for existing v2 SQLite files created before packet/link_bw columns.
+	// Idempotent migrations for existing v2 SQLite files.
 	for _, stmt := range []string{
 		`ALTER TABLE channel_samples ADD COLUMN src_packets INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE channel_samples ADD COLUMN src_link_bw_mbps REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE channel_samples ADD COLUMN dst_packets INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE channel_samples ADD COLUMN dst_link_bw_mbps REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_samples ADD COLUMN src_belated INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_samples ADD COLUMN src_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_samples ADD COLUMN src_buf_ms REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_samples ADD COLUMN src_max_bw_mbps REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_samples ADD COLUMN src_reconnects INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_samples ADD COLUMN dst_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_samples ADD COLUMN dst_buf_ms REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_samples ADD COLUMN dst_max_bw_mbps REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_samples ADD COLUMN dst_reconnects INTEGER NOT NULL DEFAULT 0`,
 	} {
 		_, _ = s.db.Exec(stmt)
 	}
@@ -194,10 +212,15 @@ INSERT INTO host_samples (
 		stmt, err := tx.PrepareContext(ctx, `
 INSERT INTO channel_samples (
 	ts, node_id, channel_id, mode, process_state, restart_count, uptime_sec,
-	src_connected, src_mbps, src_rtt_ms, src_packets, src_lost, src_retrans, src_dropped, src_tsbpd_ms, src_link_bw_mbps, src_peer_ip,
-	dst_connected, dst_mbps, dst_rtt_ms, dst_packets, dst_lost, dst_retrans, dst_dropped, dst_nak_count, dst_link_bw_mbps, dst_peer_ip,
+	src_connected, src_mbps, src_rtt_ms, src_packets, src_lost, src_retrans, src_dropped, src_belated, src_bytes, src_buf_ms, src_tsbpd_ms, src_link_bw_mbps, src_max_bw_mbps, src_reconnects, src_peer_ip,
+	dst_connected, dst_mbps, dst_rtt_ms, dst_packets, dst_lost, dst_retrans, dst_dropped, dst_nak_count, dst_bytes, dst_buf_ms, dst_link_bw_mbps, dst_max_bw_mbps, dst_reconnects, dst_peer_ip,
 	path_medium, has_native_stats, encrypted, fault_code, fault_layer, fault_summary
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+) VALUES (
+	?, ?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?, ?, ?
+)`)
 		if err != nil {
 			return err
 		}
@@ -207,8 +230,8 @@ INSERT INTO channel_samples (
 			_, err = stmt.ExecContext(ctx,
 				c.Timestamp, c.NodeID, c.ChannelID, string(c.Mode),
 				c.ProcessState, c.RestartCount, c.UptimeSec,
-				boolToInt(c.SrcConnected), c.SrcMbps, c.SrcRTTMs, c.SrcPackets, c.SrcLost, c.SrcRetrans, c.SrcDropped, c.SrcTSBPDMs, c.SrcLinkBWMbps, c.SrcPeerIP,
-				boolToInt(c.DstConnected), c.DstMbps, c.DstRTTMs, c.DstPackets, c.DstLost, c.DstRetrans, c.DstDropped, c.DstNAKCount, c.DstLinkBWMbps, c.DstPeerIP,
+				boolToInt(c.SrcConnected), c.SrcMbps, c.SrcRTTMs, c.SrcPackets, c.SrcLost, c.SrcRetrans, c.SrcDropped, c.SrcBelated, c.SrcBytes, c.SrcBufMs, c.SrcTSBPDMs, c.SrcLinkBWMbps, c.SrcMaxBWMbps, c.SrcReconnects, c.SrcPeerIP,
+				boolToInt(c.DstConnected), c.DstMbps, c.DstRTTMs, c.DstPackets, c.DstLost, c.DstRetrans, c.DstDropped, c.DstNAKCount, c.DstBytes, c.DstBufMs, c.DstLinkBWMbps, c.DstMaxBWMbps, c.DstReconnects, c.DstPeerIP,
 				c.PathMedium, boolToInt(c.HasNativeStats), boolToInt(c.Encrypted),
 				string(c.FaultCode), c.FaultLayer, c.FaultSummary,
 			)
@@ -244,8 +267,8 @@ func (s *Store) QueryChannelTimeline(ctx context.Context, nodeID, channelID stri
 	if bucket == 1 {
 		rows, err = s.db.QueryContext(ctx, `
 SELECT ts, node_id, channel_id, mode, process_state, restart_count, uptime_sec,
-	src_connected, src_mbps, src_rtt_ms, src_packets, src_lost, src_retrans, src_dropped, src_tsbpd_ms, src_link_bw_mbps, src_peer_ip,
-	dst_connected, dst_mbps, dst_rtt_ms, dst_packets, dst_lost, dst_retrans, dst_dropped, dst_nak_count, dst_link_bw_mbps, dst_peer_ip,
+	src_connected, src_mbps, src_rtt_ms, src_packets, src_lost, src_retrans, src_dropped, src_belated, src_bytes, src_buf_ms, src_tsbpd_ms, src_link_bw_mbps, src_max_bw_mbps, src_reconnects, src_peer_ip,
+	dst_connected, dst_mbps, dst_rtt_ms, dst_packets, dst_lost, dst_retrans, dst_dropped, dst_nak_count, dst_bytes, dst_buf_ms, dst_link_bw_mbps, dst_max_bw_mbps, dst_reconnects, dst_peer_ip,
 	path_medium, has_native_stats, encrypted, fault_code, fault_layer, fault_summary
 FROM channel_samples
 WHERE node_id = ? AND channel_id = ? AND ts >= ? AND ts <= ?
@@ -255,8 +278,8 @@ ORDER BY ts ASC`, nodeID, channelID, fromTS, toTS)
 SELECT
 	(ts / ?) * ? AS bucket_ts,
 	node_id, channel_id, MAX(mode), MAX(process_state), MAX(restart_count), MAX(uptime_sec),
-	MIN(src_connected), AVG(src_mbps), MAX(src_rtt_ms), SUM(src_packets), SUM(src_lost), SUM(src_retrans), SUM(src_dropped), MAX(src_tsbpd_ms), AVG(src_link_bw_mbps), MAX(src_peer_ip),
-	MIN(dst_connected), AVG(dst_mbps), MAX(dst_rtt_ms), SUM(dst_packets), SUM(dst_lost), SUM(dst_retrans), SUM(dst_dropped), SUM(dst_nak_count), AVG(dst_link_bw_mbps), MAX(dst_peer_ip),
+	MIN(src_connected), AVG(src_mbps), MAX(src_rtt_ms), SUM(src_packets), SUM(src_lost), SUM(src_retrans), SUM(src_dropped), SUM(src_belated), SUM(src_bytes), MAX(src_buf_ms), MAX(src_tsbpd_ms), AVG(src_link_bw_mbps), AVG(src_max_bw_mbps), SUM(src_reconnects), MAX(src_peer_ip),
+	MIN(dst_connected), AVG(dst_mbps), MAX(dst_rtt_ms), SUM(dst_packets), SUM(dst_lost), SUM(dst_retrans), SUM(dst_dropped), SUM(dst_nak_count), SUM(dst_bytes), MAX(dst_buf_ms), AVG(dst_link_bw_mbps), AVG(dst_max_bw_mbps), SUM(dst_reconnects), MAX(dst_peer_ip),
 	MAX(path_medium), MAX(has_native_stats), MAX(encrypted),
 	MAX(CASE WHEN fault_code != 'HEALTHY' AND fault_code != 'IDLE_EXPECTED_OFF' THEN fault_code ELSE '' END),
 	MAX(CASE WHEN fault_layer != 'none' THEN fault_layer ELSE '' END),
@@ -278,8 +301,8 @@ ORDER BY bucket_ts ASC`, bucket, bucket, nodeID, channelID, fromTS, toTS)
 		var srcConn, dstConn, hasStats, enc int
 		err := rows.Scan(
 			&c.Timestamp, &c.NodeID, &c.ChannelID, &modeStr, &c.ProcessState, &c.RestartCount, &c.UptimeSec,
-			&srcConn, &c.SrcMbps, &c.SrcRTTMs, &c.SrcPackets, &c.SrcLost, &c.SrcRetrans, &c.SrcDropped, &c.SrcTSBPDMs, &c.SrcLinkBWMbps, &c.SrcPeerIP,
-			&dstConn, &c.DstMbps, &c.DstRTTMs, &c.DstPackets, &c.DstLost, &c.DstRetrans, &c.DstDropped, &c.DstNAKCount, &c.DstLinkBWMbps, &c.DstPeerIP,
+			&srcConn, &c.SrcMbps, &c.SrcRTTMs, &c.SrcPackets, &c.SrcLost, &c.SrcRetrans, &c.SrcDropped, &c.SrcBelated, &c.SrcBytes, &c.SrcBufMs, &c.SrcTSBPDMs, &c.SrcLinkBWMbps, &c.SrcMaxBWMbps, &c.SrcReconnects, &c.SrcPeerIP,
+			&dstConn, &c.DstMbps, &c.DstRTTMs, &c.DstPackets, &c.DstLost, &c.DstRetrans, &c.DstDropped, &c.DstNAKCount, &c.DstBytes, &c.DstBufMs, &c.DstLinkBWMbps, &c.DstMaxBWMbps, &c.DstReconnects, &c.DstPeerIP,
 			&c.PathMedium, &hasStats, &enc, &fcStr, &c.FaultLayer, &c.FaultSummary,
 		)
 		if err != nil {
