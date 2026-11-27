@@ -255,5 +255,46 @@ func TestAPIAuthOverviewRestartAndEventSheet(t *testing.T) {
 	if recTest.Code != http.StatusOK || feishuHits != 1 {
 		t.Fatalf("POST alerts/test = %d (hits=%d) body=%s", recTest.Code, feishuHits, recTest.Body.String())
 	}
+
+	// Node & Peer management APIs
+	var latestPeers []config.PeerNodeConfig
+	srv.SetNodesConfigCallback(func(displayName, region, publicIP string, peers []config.PeerNodeConfig) error {
+		latestPeers = peers
+		return nil
+	})
+
+	reqLocal := httptest.NewRequest(http.MethodPut, "/api/v1/nodes/local", bytes.NewBufferString(`{"display_name":"新加坡主节点","region":"Singapore","public_ip":"198.51.100.11"}`))
+	reqLocal.AddCookie(cookie)
+	recLocal := httptest.NewRecorder()
+	handler.ServeHTTP(recLocal, reqLocal)
+	if recLocal.Code != http.StatusOK {
+		t.Fatalf("PUT nodes/local = %d %s", recLocal.Code, recLocal.Body.String())
+	}
+
+	reqAddPeer := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/peers", bytes.NewBufferString(`{"node_id":"vps-2","display_name":"香港备节点","region":"HongKong","public_ip":"198.51.100.12","api_url":"http://198.51.100.12:18080/"}`))
+	reqAddPeer.AddCookie(cookie)
+	recAddPeer := httptest.NewRecorder()
+	handler.ServeHTTP(recAddPeer, reqAddPeer)
+	if recAddPeer.Code != http.StatusOK || len(latestPeers) != 1 || latestPeers[0].APIToken != "peer-secret" {
+		t.Fatalf("POST nodes/peers = %d peers=%+v body=%s", recAddPeer.Code, latestPeers, recAddPeer.Body.String())
+	}
+
+	reqDelPeer := httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/peers/vps-2", nil)
+	reqDelPeer.AddCookie(cookie)
+	recDelPeer := httptest.NewRecorder()
+	handler.ServeHTTP(recDelPeer, reqDelPeer)
+	if recDelPeer.Code != http.StatusOK || len(latestPeers) != 0 {
+		t.Fatalf("DELETE nodes/peers/vps-2 = %d peers=%+v", recDelPeer.Code, latestPeers)
+	}
+
+	// EventSheet rejects 2 primary legs or duplicate server+channel
+	dupSheet := `{"event_name":"test","sites":{"venue":"A","hub":"B"},"signal_groups":[{"id":"g1","name":"CAM1","direction":"venue_to_hub","redundancy_type":"dual_hardware","expected_active":true,"legs":[{"role":"primary","node_id":"vps-1","channel_id":"srt-cam1","mode":"srt-relay","in_port":21111,"out_port":11111},{"role":"primary","node_id":"vps-1","channel_id":"srt-cam2","mode":"srt-relay","in_port":21112,"out_port":11112}]}]}`
+	reqDup := httptest.NewRequest(http.MethodPut, "/api/v1/event-sheet", bytes.NewBufferString(dupSheet))
+	reqDup.AddCookie(cookie)
+	recDup := httptest.NewRecorder()
+	handler.ServeHTTP(recDup, reqDup)
+	if recDup.Code != http.StatusBadRequest {
+		t.Fatalf("PUT duplicate primary roles = %d, want 400", recDup.Code)
+	}
 }
 

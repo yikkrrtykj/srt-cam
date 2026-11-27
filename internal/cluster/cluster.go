@@ -56,9 +56,54 @@ func NewManager(cfg config.NodeConfig) *Manager {
 	return m
 }
 
+// UpdatePeers hot-reloads the configured remote peer list and reconciles cached live statuses.
+func (m *Manager) UpdatePeers(peers []config.PeerNodeConfig) {
+	cp := make([]config.PeerNodeConfig, len(peers))
+	copy(cp, peers)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg.Peers = cp
+
+	keep := make(map[string]bool, len(cp))
+	for _, p := range cp {
+		keep[p.NodeID] = true
+		if cur, ok := m.peers[p.NodeID]; ok {
+			cur.DisplayName = p.DisplayName
+			cur.Region = p.Region
+			cur.PublicIP = p.PublicIP
+			m.peers[p.NodeID] = cur
+		} else {
+			m.peers[p.NodeID] = model.NodeLiveStatus{
+				NodeID:      p.NodeID,
+				DisplayName: p.DisplayName,
+				Region:      p.Region,
+				PublicIP:    p.PublicIP,
+				Online:      false,
+				Error:       "正在连接...",
+				Channels:    map[string]model.ChannelSample{},
+			}
+		}
+	}
+	for id := range m.peers {
+		if !keep[id] {
+			delete(m.peers, id)
+		}
+	}
+}
+
+func (m *Manager) peersList() []config.PeerNodeConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	cp := make([]config.PeerNodeConfig, len(m.cfg.Peers))
+	copy(cp, m.cfg.Peers)
+	return cp
+}
+
 // PollPeers refreshes live status from all configured peers concurrently.
 func (m *Manager) PollPeers(ctx context.Context, sheet config.EventSheet) {
-	if len(m.cfg.Peers) == 0 {
+	peers := m.peersList()
+	if len(peers) == 0 {
 		return
 	}
 	if m.cfg.DemoMode {
@@ -66,7 +111,7 @@ func (m *Manager) PollPeers(ctx context.Context, sheet config.EventSheet) {
 		return
 	}
 	var wg sync.WaitGroup
-	for _, p := range m.cfg.Peers {
+	for _, p := range peers {
 		wg.Add(1)
 		go func(peer config.PeerNodeConfig) {
 			defer wg.Done()
@@ -81,9 +126,9 @@ func (m *Manager) PollPeers(ctx context.Context, sheet config.EventSheet) {
 
 // SnapshotAll merges the local node status with all cached peer statuses.
 func (m *Manager) SnapshotAll(local model.NodeLiveStatus) map[string]model.NodeLiveStatus {
-	out := make(map[string]model.NodeLiveStatus, len(m.cfg.Peers)+1)
-	out[local.NodeID] = local
 	m.mu.RLock()
+	out := make(map[string]model.NodeLiveStatus, len(m.peers)+1)
+	out[local.NodeID] = local
 	for id, st := range m.peers {
 		out[id] = st
 	}
@@ -256,7 +301,7 @@ func (m *Manager) QueryPeerThumbnail(ctx context.Context, nodeID, channelID stri
 }
 
 func (m *Manager) findPeer(nodeID string) (config.PeerNodeConfig, bool) {
-	for _, p := range m.cfg.Peers {
+	for _, p := range m.peersList() {
 		if p.NodeID == nodeID {
 			return p, true
 		}
@@ -317,7 +362,7 @@ func (m *Manager) simulateDemoPeers(sheet config.EventSheet) {
 	now := time.Now()
 	elapsed := now.Sub(m.startedAt).Seconds()
 
-	for pIdx, peer := range m.cfg.Peers {
+	for pIdx, peer := range m.peersList() {
 		host := model.HostSample{
 			Timestamp:       now.Unix(),
 			NodeID:          peer.NodeID,

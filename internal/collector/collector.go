@@ -52,6 +52,24 @@ func (c *Collector) UpdateThresholds(th config.ThresholdConfig) {
 	c.mu.Unlock()
 }
 
+// UpdateLocalMeta hot-reloads display_name, region, and public_ip safely from the web UI.
+func (c *Collector) UpdateLocalMeta(displayName, region, publicIP string) {
+	c.mu.Lock()
+	c.cfg.DisplayName = displayName
+	c.cfg.Region = region
+	c.cfg.PublicIP = publicIP
+	c.mu.Unlock()
+}
+
+func (c *Collector) localMeta() (displayName, region, publicIP string) {
+	c.mu.Lock()
+	displayName = c.cfg.DisplayName
+	region = c.cfg.Region
+	publicIP = c.cfg.PublicIP
+	c.mu.Unlock()
+	return
+}
+
 func (c *Collector) currentThresholds() config.ThresholdConfig {
 	c.mu.Lock()
 	th := c.cfg.Thresholds
@@ -224,11 +242,12 @@ func (c *Collector) CollectOnce(ctx context.Context, sheet config.EventSheet) (m
 		samples = append(samples, sample)
 	}
 
+	displayName, region, publicIP := c.localMeta()
 	status := model.NodeLiveStatus{
 		NodeID:      c.cfg.NodeID,
-		DisplayName: c.cfg.DisplayName,
-		Region:      c.cfg.Region,
-		PublicIP:    c.cfg.PublicIP,
+		DisplayName: displayName,
+		Region:      region,
+		PublicIP:    publicIP,
 		Online:      true,
 		UpdatedAt:   now.Unix(),
 		Host:        hostSample,
@@ -611,11 +630,12 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 		}
 	}
 
+	displayName, region, publicIP := c.localMeta()
 	return model.NodeLiveStatus{
 		NodeID:      c.cfg.NodeID,
-		DisplayName: c.cfg.DisplayName,
-		Region:      c.cfg.Region,
-		PublicIP:    c.cfg.PublicIP,
+		DisplayName: displayName,
+		Region:      region,
+		PublicIP:    publicIP,
 		Online:      true,
 		UpdatedAt:   now.Unix(),
 		Host:        hostSample,

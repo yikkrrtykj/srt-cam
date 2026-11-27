@@ -536,7 +536,7 @@ export function MonitorPage({
                       {(
                         [
                           { id: "realtime", label: "实时监看" },
-                          { id: "diagnosis", label: "分段排障" },
+                          { id: "diagnosis", label: "历史趋势" },
                           { id: "logs", label: "通信记录" },
                         ] as const
                       ).map((t) => (
@@ -710,10 +710,10 @@ export function MonitorPage({
                         }}
                       >
                         <SlidersHorizontal className="h-3.5 w-3.5" />
-                        排障
+                        趋势
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>切换到工作台查看 4 层分段排障与通信记录</TooltipContent>
+                    <TooltipContent>切换到工作台查看历史趋势与通信记录</TooltipContent>
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>

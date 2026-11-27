@@ -14,6 +14,24 @@ interface Props {
   onRefreshOverview: () => void;
 }
 
+const SPORTS_PRESET = {
+  minFlowMbps: 0.5,
+  highRttMs: 200,
+  highLoss: 60,
+  highRetrans: 80,
+  highNak: 60,
+  udpDropTrigger: 10,
+};
+
+const DEFAULT_PRESET = {
+  minFlowMbps: 0.1,
+  highRttMs: 250,
+  highLoss: 20,
+  highRetrans: 30,
+  highNak: 20,
+  udpDropTrigger: 10,
+};
+
 export function AlertsPage({ overview, onRefreshOverview }: Props) {
   const [cfg, setCfg] = useState<AlertConfigView | null>(null);
   const [events, setEvents] = useState<FaultEvent[]>([]);
@@ -22,7 +40,6 @@ export function AlertsPage({ overview, onRefreshOverview }: Props) {
   const [testing, setTesting] = useState(false);
   const [busySignalId, setBusySignalId] = useState<string | null>(null);
 
-  // Editable form state
   const [enabled, setEnabled] = useState(false);
   const [webhookInput, setWebhookInput] = useState("");
   const [secretInput, setSecretInput] = useState("");
@@ -70,6 +87,16 @@ export function AlertsPage({ overview, onRefreshOverview }: Props) {
     setUdpDropTrigger(ac.thresholds.udp_buf_drop_trigger);
   }
 
+  function applyThresholdPreset(preset: typeof SPORTS_PRESET, name: string) {
+    setMinFlowMbps(preset.minFlowMbps);
+    setHighRttMs(preset.highRttMs);
+    setHighLoss(preset.highLoss);
+    setHighRetrans(preset.highRetrans);
+    setHighNak(preset.highNak);
+    setUdpDropTrigger(preset.udpDropTrigger);
+    toast.success(`已填入「${name}」阈值，点击右上角保存配置后生效`);
+  }
+
   useEffect(() => {
     void loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -99,9 +126,7 @@ export function AlertsPage({ overview, onRefreshOverview }: Props) {
         },
       });
       applyConfigView(updated);
-      toast.success(
-        updated.persistent ? "告警配置已保存并写入服务器配置文件" : "告警配置已生效（当前为内存/演示模式）"
-      );
+      toast.success("告警配置已保存并立即生效");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "保存告警配置失败");
     } finally {
@@ -149,7 +174,7 @@ export function AlertsPage({ overview, onRefreshOverview }: Props) {
         <div>
           <h1 className="text-[16px] font-semibold text-[#F1F3F6]">告警设置与飞书通知</h1>
           <p className="mt-0.5 text-[12px] text-[#8B94A5]">
-            统一配置飞书群机器人 Webhook、防抖冷却、信号异常判定阈值与单路告警开关。
+            统一配置飞书群机器人通知、防抖冷却、信号异常判定阈值与单路断流告警开关。
           </p>
         </div>
 
@@ -242,12 +267,14 @@ export function AlertsPage({ overview, onRefreshOverview }: Props) {
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[12px] text-[#98A1B0]">控制台访问地址（告警卡片跳转链接）</label>
+              <label className="text-[12px] text-[#98A1B0]">
+                控制台访问地址（可选，留空不影响推送）
+              </label>
               <Input
                 className="tabular"
                 value={dashboardUrl}
                 onChange={(e) => setDashboardUrl(e.target.value)}
-                placeholder="例如：http://你的服务器IP:18080"
+                placeholder="填写后飞书告警卡片内会附带“查看链路趋势”跳转按钮"
               />
             </div>
 
@@ -295,55 +322,73 @@ export function AlertsPage({ overview, onRefreshOverview }: Props) {
 
         {/* Card 2: Diagnostic Thresholds */}
         <section className="rounded-lg border border-[#232730] bg-[#111316] overflow-hidden">
-          <div className="flex items-center justify-between border-b border-[#1E222B] bg-[#14171C] px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1E222B] bg-[#14171C] px-4 py-2.5">
             <div className="flex items-center gap-2">
               <ShieldAlert className="h-4 w-4 text-[#98A1B0]" />
               <h2 className="text-[13px] font-medium text-[#F1F3F6]">信号异常判定阈值</h2>
             </div>
-            <span className="text-[11px] text-[#757E8F]">
-              {cfg?.persistent ? "保存后持久化至 config.json" : "内存生效"}
-            </span>
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => applyThresholdPreset(SPORTS_PRESET, "赛事回传推荐")}
+              >
+                赛事回传推荐
+              </Button>
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => applyThresholdPreset(DEFAULT_PRESET, "通用默认")}
+              >
+                恢复默认
+              </Button>
+            </div>
           </div>
 
-          <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-            <ThresholdField
-              label="最低有效码率 (Mb/s)"
-              hint="低于此值判定为无流 / 中断"
-              value={minFlowMbps}
-              step="0.05"
-              onChange={setMinFlowMbps}
-            />
-            <ThresholdField
-              label="高往返时延阈值 (ms)"
-              hint="RTT 超过此值判定为链路波动"
-              value={highRttMs}
-              step="10"
-              onChange={setHighRttMs}
-            />
-            <ThresholdField
-              label="单周期网络丢包 (包)"
-              hint="2 秒采样周期内丢包触发波动"
-              value={highLoss}
-              onChange={setHighLoss}
-            />
-            <ThresholdField
-              label="单周期重传包数 (包)"
-              hint="高频 ARQ 重传提示线路不稳定"
-              value={highRetrans}
-              onChange={setHighRetrans}
-            />
-            <ThresholdField
-              label="透传模式 NAK 请求 (包)"
-              hint="加密透传下解码端请求重发阈值"
-              value={highNak}
-              onChange={setHighNak}
-            />
-            <ThresholdField
-              label="服务器 UDP 缓冲丢包 (包)"
-              hint="Linux 内核收包溢出判定阈值"
-              value={udpDropTrigger}
-              onChange={setUdpDropTrigger}
-            />
+          <div className="p-4 space-y-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <ThresholdField
+                label="最低有效码率 (Mb/s)"
+                hint="低于此值判定为无流 / 中断"
+                value={minFlowMbps}
+                step="0.05"
+                onChange={setMinFlowMbps}
+              />
+              <ThresholdField
+                label="高往返时延阈值 (ms)"
+                hint="RTT 超过此值判定为链路波动"
+                value={highRttMs}
+                step="10"
+                onChange={setHighRttMs}
+              />
+              <ThresholdField
+                label="单周期网络丢包 (包)"
+                hint="2 秒周期内丢包触发波动提示"
+                value={highLoss}
+                onChange={setHighLoss}
+              />
+              <ThresholdField
+                label="单周期重传包数 (包)"
+                hint="高频 ARQ 重传提示线路不稳定"
+                value={highRetrans}
+                onChange={setHighRetrans}
+              />
+              <ThresholdField
+                label="透传模式 NAK 请求 (包)"
+                hint="加密透传下解码端请求重发阈值"
+                value={highNak}
+                onChange={setHighNak}
+              />
+              <ThresholdField
+                label="服务器 UDP 缓冲丢包 (包)"
+                hint="服务器网卡/内核收包溢出判定阈值"
+                value={udpDropTrigger}
+                onChange={setUdpDropTrigger}
+              />
+            </div>
+            <div className="rounded-md border border-[#1E222B] bg-[#0D0F12] px-3 py-2 text-[11.5px] text-[#7C8596]">
+              说明：出现任意<strong className="text-[#D3D8E0]">未恢复弃包（Drop &gt; 0）</strong>或<strong className="text-[#D3D8E0]"> 4×RTT 超过设定缓冲</strong>时，无论上述丢包/重传阈值如何设置均会立即告警。
+            </div>
           </div>
         </section>
       </div>

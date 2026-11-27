@@ -120,6 +120,24 @@ func main() {
 		col.UpdateThresholds(th)
 		return nil
 	})
+	srv.SetNodesConfigCallback(func(displayName, region, publicIP string, peers []config.PeerNodeConfig) error {
+		if *cfgPath != "" {
+			diskCfg, err := config.LoadNodeConfig(*cfgPath)
+			if err != nil {
+				diskCfg = cfg
+			}
+			diskCfg.DisplayName = displayName
+			diskCfg.Region = region
+			diskCfg.PublicIP = publicIP
+			diskCfg.Peers = peers
+			if err := config.SaveNodeConfig(*cfgPath, diskCfg); err != nil {
+				return err
+			}
+		}
+		col.UpdateLocalMeta(displayName, region, publicIP)
+		clusterMgr.UpdatePeers(peers)
+		return nil
+	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

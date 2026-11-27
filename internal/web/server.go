@@ -119,6 +119,51 @@ type AlertConfigUpdate struct {
 // AlertConfigUpdateFunc persists and hot-reloads updated Feishu & threshold settings.
 type AlertConfigUpdateFunc func(feishu config.FeishuConfig, thresholds config.ThresholdConfig) error
 
+// LocalNodeView describes editable metadata for the local node.
+type LocalNodeView struct {
+	NodeID       string `json:"node_id"`
+	DisplayName  string `json:"display_name"`
+	Region       string `json:"region"`
+	PublicIP     string `json:"public_ip"`
+	ClusterToken string `json:"cluster_token"`
+}
+
+// PeerNodeView describes a configured peer relay server (never returns raw API token).
+type PeerNodeView struct {
+	NodeID          string `json:"node_id"`
+	DisplayName     string `json:"display_name"`
+	Region          string `json:"region"`
+	PublicIP        string `json:"public_ip"`
+	APIURL          string `json:"api_url"`
+	TokenConfigured bool   `json:"token_configured"`
+}
+
+// NodesConfigView is returned by GET /api/v1/nodes/config.
+type NodesConfigView struct {
+	Local LocalNodeView  `json:"local"`
+	Peers []PeerNodeView `json:"peers"`
+}
+
+// LocalNodeUpdate is accepted by PUT /api/v1/nodes/local.
+type LocalNodeUpdate struct {
+	DisplayName string `json:"display_name"`
+	Region      string `json:"region"`
+	PublicIP    string `json:"public_ip"`
+}
+
+// PeerNodeUpsert is accepted by POST /api/v1/nodes/peers.
+type PeerNodeUpsert struct {
+	NodeID      string `json:"node_id"`
+	DisplayName string `json:"display_name"`
+	Region      string `json:"region"`
+	PublicIP    string `json:"public_ip"`
+	APIURL      string `json:"api_url"`
+	APIToken    string `json:"api_token"`
+}
+
+// NodesConfigUpdateFunc persists and hot-reloads local node metadata and remote peer list.
+type NodesConfigUpdateFunc func(displayName, region, publicIP string, peers []config.PeerNodeConfig) error
+
 // Server serves authenticated dashboard REST/SSE APIs, peer cluster APIs, and the embedded SPA.
 type Server struct {
 	cfg             config.NodeConfig
@@ -132,6 +177,7 @@ type Server struct {
 	testFeishu      func(ctx context.Context) error
 	alertPersist    bool
 	onAlertConfigFn AlertConfigUpdateFunc
+	onNodesConfigFn NodesConfigUpdateFunc
 	staticFS        fs.FS
 
 	mu       sync.RWMutex
@@ -181,6 +227,13 @@ func (s *Server) SetAlertConfigCallback(persistent bool, fn AlertConfigUpdateFun
 	s.mu.Lock()
 	s.alertPersist = persistent
 	s.onAlertConfigFn = fn
+	s.mu.Unlock()
+}
+
+// SetNodesConfigCallback attaches a persistence and hot-reload hook for node & peer management endpoints.
+func (s *Server) SetNodesConfigCallback(fn NodesConfigUpdateFunc) {
+	s.mu.Lock()
+	s.onNodesConfigFn = fn
 	s.mu.Unlock()
 }
 
@@ -325,6 +378,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/alerts/config", s.withAuth(s.handleGetAlertConfig))
 	mux.HandleFunc("PUT /api/v1/alerts/config", s.withAuth(s.handlePutAlertConfig))
 	mux.HandleFunc("POST /api/v1/alerts/test", s.withAuth(s.handleTestAlert))
+	mux.HandleFunc("GET /api/v1/nodes/config", s.withAuth(s.handleGetNodesConfig))
+	mux.HandleFunc("PUT /api/v1/nodes/local", s.withAuth(s.handlePutLocalNode))
+	mux.HandleFunc("POST /api/v1/nodes/peers", s.withAuth(s.handleUpsertPeer))
+	mux.HandleFunc("DELETE /api/v1/nodes/peers/{nodeID}", s.withAuth(s.handleDeletePeer))
 
 	// Peer VPS Cluster APIs (Bearer cluster_token)
 	mux.HandleFunc("GET /api/peer/healthz", s.withClusterAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -495,6 +552,12 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request, _ string
 	}
 	s.mu.RUnlock()
 
+	s.mu.RLock()
+	localDisplayName := s.cfg.DisplayName
+	peersCopy := make([]config.PeerNodeConfig, len(s.cfg.Peers))
+	copy(peersCopy, s.cfg.Peers)
+	s.mu.RUnlock()
+
 	legsOut := make([]LegTimeline, len(target.Legs))
 	var wg sync.WaitGroup
 	for idx, leg := range target.Legs {
@@ -503,7 +566,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request, _ string
 			defer wg.Done()
 			lt := LegTimeline{Leg: l, Node: l.NodeID}
 			if l.NodeID == s.cfg.NodeID {
-				lt.Node = s.cfg.DisplayName
+				lt.Node = localDisplayName
 				chs, err := s.store.QueryChannelTimeline(r.Context(), l.NodeID, l.ChannelID, fromTS, toTS, 900)
 				if err != nil {
 					lt.Error = err.Error()
@@ -512,7 +575,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request, _ string
 				lt.Samples = chs
 				lt.Host = hosts
 			} else {
-				for _, p := range s.cfg.Peers {
+				for _, p := range peersCopy {
 					if p.NodeID == l.NodeID && p.DisplayName != "" {
 						lt.Node = p.DisplayName
 					}
@@ -833,6 +896,231 @@ func (s *Server) handleTestAlert(w http.ResponseWriter, r *http.Request, user st
 		Detail:   "发送测试飞书告警卡片成功",
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) buildNodesConfigViewLocked() NodesConfigView {
+	peers := make([]PeerNodeView, 0, len(s.cfg.Peers))
+	for _, p := range s.cfg.Peers {
+		peers = append(peers, PeerNodeView{
+			NodeID:          p.NodeID,
+			DisplayName:     p.DisplayName,
+			Region:          p.Region,
+			PublicIP:        p.PublicIP,
+			APIURL:          p.APIURL,
+			TokenConfigured: strings.TrimSpace(p.APIToken) != "",
+		})
+	}
+	return NodesConfigView{
+		Local: LocalNodeView{
+			NodeID:       s.cfg.NodeID,
+			DisplayName:  s.cfg.DisplayName,
+			Region:       s.cfg.Region,
+			PublicIP:     s.cfg.PublicIP,
+			ClusterToken: s.cfg.ClusterToken,
+		},
+		Peers: peers,
+	}
+}
+
+func (s *Server) handleGetNodesConfig(w http.ResponseWriter, r *http.Request, _ string) {
+	s.mu.RLock()
+	view := s.buildNodesConfigViewLocked()
+	s.mu.RUnlock()
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handlePutLocalNode(w http.ResponseWriter, r *http.Request, user string) {
+	var body LocalNodeUpdate
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无效 JSON 格式：" + err.Error()})
+		return
+	}
+	displayName := strings.TrimSpace(body.DisplayName)
+	if displayName == "" {
+		displayName = s.cfg.NodeID
+	}
+	region := strings.TrimSpace(body.Region)
+	publicIP := strings.TrimSpace(body.PublicIP)
+
+	s.mu.RLock()
+	peers := make([]config.PeerNodeConfig, len(s.cfg.Peers))
+	copy(peers, s.cfg.Peers)
+	onUpdate := s.onNodesConfigFn
+	s.mu.RUnlock()
+
+	if onUpdate != nil {
+		if err := onUpdate(displayName, region, publicIP, peers); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "保存本机信息失败：" + err.Error()})
+			return
+		}
+	}
+
+	s.mu.Lock()
+	s.cfg.DisplayName = displayName
+	s.cfg.Region = region
+	s.cfg.PublicIP = publicIP
+	s.local.DisplayName = displayName
+	s.local.Region = region
+	s.local.PublicIP = publicIP
+	for i := range s.overview.Nodes {
+		if s.overview.Nodes[i].NodeID == s.cfg.NodeID {
+			s.overview.Nodes[i].DisplayName = displayName
+			s.overview.Nodes[i].Region = region
+			s.overview.Nodes[i].PublicIP = publicIP
+		}
+	}
+	view := s.buildNodesConfigViewLocked()
+	s.mu.Unlock()
+
+	_ = s.store.InsertAudit(r.Context(), model.AuditEntry{
+		Username: user,
+		NodeID:   s.cfg.NodeID,
+		Action:   "update_local_node",
+		Target:   s.cfg.NodeID,
+		Detail:   fmt.Sprintf("更新本机信息（名称=%s，机房=%s，IP=%s）", displayName, region, publicIP),
+	})
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleUpsertPeer(w http.ResponseWriter, r *http.Request, user string) {
+	var body PeerNodeUpsert
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无效 JSON 格式：" + err.Error()})
+		return
+	}
+	nodeID := strings.TrimSpace(body.NodeID)
+	apiURL := strings.TrimRight(strings.TrimSpace(body.APIURL), "/")
+	if nodeID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "服务器标识（如 vps-2）不能为空"})
+		return
+	}
+	if nodeID == s.cfg.NodeID {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "服务器标识不能与本机相同"})
+		return
+	}
+	if apiURL == "" || (!strings.HasPrefix(apiURL, "http://") && !strings.HasPrefix(apiURL, "https://")) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "管理地址必须以 http:// 或 https:// 开头"})
+		return
+	}
+
+	s.mu.RLock()
+	displayName := s.cfg.DisplayName
+	region := s.cfg.Region
+	publicIP := s.cfg.PublicIP
+	clusterToken := s.cfg.ClusterToken
+	peers := make([]config.PeerNodeConfig, len(s.cfg.Peers))
+	copy(peers, s.cfg.Peers)
+	onUpdate := s.onNodesConfigFn
+	s.mu.RUnlock()
+
+	peerName := strings.TrimSpace(body.DisplayName)
+	if peerName == "" {
+		peerName = nodeID
+	}
+	token := strings.TrimSpace(body.APIToken)
+
+	foundIdx := -1
+	for i := range peers {
+		if peers[i].NodeID == nodeID {
+			foundIdx = i
+			break
+		}
+	}
+	if token == "" {
+		if foundIdx >= 0 && peers[foundIdx].APIToken != "" {
+			token = peers[foundIdx].APIToken
+		} else {
+			token = clusterToken
+		}
+	}
+
+	peerCfg := config.PeerNodeConfig{
+		NodeID:      nodeID,
+		DisplayName: peerName,
+		Region:      strings.TrimSpace(body.Region),
+		PublicIP:    strings.TrimSpace(body.PublicIP),
+		APIURL:      apiURL,
+		APIToken:    token,
+	}
+	if foundIdx >= 0 {
+		peers[foundIdx] = peerCfg
+	} else {
+		peers = append(peers, peerCfg)
+	}
+
+	if onUpdate != nil {
+		if err := onUpdate(displayName, region, publicIP, peers); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "保存服务器列表失败：" + err.Error()})
+			return
+		}
+	}
+
+	s.mu.Lock()
+	s.cfg.Peers = peers
+	view := s.buildNodesConfigViewLocked()
+	s.mu.Unlock()
+
+	_ = s.store.InsertAudit(r.Context(), model.AuditEntry{
+		Username: user,
+		NodeID:   s.cfg.NodeID,
+		Action:   "upsert_peer_node",
+		Target:   nodeID,
+		Detail:   fmt.Sprintf("保存远端服务器 %s (%s)", nodeID, apiURL),
+	})
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleDeletePeer(w http.ResponseWriter, r *http.Request, user string) {
+	nodeID := strings.TrimSpace(r.PathValue("nodeID"))
+	if nodeID == "" || nodeID == s.cfg.NodeID {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "不能移除本机服务器"})
+		return
+	}
+
+	s.mu.RLock()
+	displayName := s.cfg.DisplayName
+	region := s.cfg.Region
+	publicIP := s.cfg.PublicIP
+	var nextPeers []config.PeerNodeConfig
+	removed := false
+	for _, p := range s.cfg.Peers {
+		if p.NodeID == nodeID {
+			removed = true
+			continue
+		}
+		nextPeers = append(nextPeers, p)
+	}
+	onUpdate := s.onNodesConfigFn
+	s.mu.RUnlock()
+
+	if !removed {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "未找到该远端服务器"})
+		return
+	}
+	if nextPeers == nil {
+		nextPeers = []config.PeerNodeConfig{}
+	}
+
+	if onUpdate != nil {
+		if err := onUpdate(displayName, region, publicIP, nextPeers); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "移除服务器失败：" + err.Error()})
+			return
+		}
+	}
+
+	s.mu.Lock()
+	s.cfg.Peers = nextPeers
+	view := s.buildNodesConfigViewLocked()
+	s.mu.Unlock()
+
+	_ = s.store.InsertAudit(r.Context(), model.AuditEntry{
+		Username: user,
+		NodeID:   s.cfg.NodeID,
+		Action:   "delete_peer_node",
+		Target:   nodeID,
+		Detail:   fmt.Sprintf("移除远端服务器 %s", nodeID),
+	})
+	writeJSON(w, http.StatusOK, view)
 }
 
 // Peer cluster handlers
