@@ -248,11 +248,7 @@ export function MonitorPage({
     try {
       await api.setSignalGroupEnabled(groupId, enable, force);
       setStopConfirm(null);
-      toast.success(
-        enable
-          ? `已启动「${signalName}」，传输参数已锁定`
-          : `已停止「${signalName}」，传输参数已解锁`
-      );
+      toast.success(enable ? `已启动「${signalName}」` : `已停止「${signalName}」`);
       onRefresh();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "切换流开关失败";
@@ -348,12 +344,10 @@ export function MonitorPage({
   const pushUrl = activeLeg ? `srt://${hostAddr}:${activeLeg.in_port}` : "";
   const pullUrl = activeLeg && !isPass ? `srt://${hostAddr}:${activeLeg.out_port}` : "";
 
-  // Full-width responsive Multiviewer Grid columns tuned to signal count
+  // Responsive Multiviewer Grid tuned to keep tiles crisp (1:1 against 640x360 previews even with 1-2 feeds)
   const wallGridCols =
-    filtered.length <= 1
-      ? "grid-cols-1 max-w-[960px] mx-auto"
-      : filtered.length <= 4
-      ? "grid-cols-1 sm:grid-cols-2"
+    filtered.length <= 4
+      ? "grid-cols-1 md:grid-cols-2 max-w-[1280px]"
       : filtered.length <= 9
       ? "grid-cols-1 sm:grid-cols-2 xl:grid-cols-3"
       : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4";

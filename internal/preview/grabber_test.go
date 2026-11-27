@@ -271,7 +271,7 @@ func TestEndToEndFFmpegKeyframeFromRelayTee(t *testing.T) {
 			if meta.AudioCodec != "AAC" || meta.AudioSampleRate != 48000 || meta.AudioTracks != 1 || meta.AudioBitrateKbps <= 0 {
 				t.Fatalf("AudioMeta = %+v, want AAC 48000Hz bitrate>0 tracks=1", meta)
 			}
-			t.Logf("PASS: grabbed real 320x180 JPEG (%d bytes) + AV meta (%s %s %.0ffps | %s %dHz %dkbps)",
+			t.Logf("PASS: grabbed real 640x360 JPEG (%d bytes) + AV meta (%s %s %.0ffps | %s %dHz %dkbps)",
 				len(snap.Data), meta.Resolution, meta.Codec, meta.FPS, meta.AudioCodec, meta.AudioSampleRate, meta.AudioBitrateKbps)
 			return
 		}

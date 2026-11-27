@@ -354,8 +354,8 @@ func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string, force
 	defer cancel()
 
 	// Strictly grab 1 keyframe (-skip_frame nokey -frames:v 1), no audio/subtitle decode,
-	// bounded probe size and scaled to 320x180 JPEG so CPU usage stays negligible on relay hosts.
-	// -loglevel info prints the probed video header (codec, resolution, fps) on stderr at zero extra cost.
+	// bounded probe size and scaled to 640x360 JPEG so wall tiles stay sharp with minimal CPU.
+	// -loglevel info prints the probed video/audio headers on stderr at zero extra cost.
 	args := []string{
 		"-nostdin",
 		"-loglevel", "info",
@@ -372,8 +372,8 @@ func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string, force
 		"-an", "-sn", "-dn",
 		"-i", inputURL,
 		"-frames:v", "1",
-		"-vf", "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2",
-		"-q:v", "6",
+		"-vf", "scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2",
+		"-q:v", "4",
 		"-f", "image2pipe",
 		"-vcodec", "mjpeg",
 		"pipe:1",
