@@ -103,7 +103,11 @@ export function RouteThumbnail({ leg, label, variant = "mini", className }: Prop
                 variant === "mini" ? "text-[9px]" : variant === "wall" ? "text-[11px]" : "text-[10.5px]"
               )}
             >
-              {s.fault_code === "IDLE_EXPECTED_OFF" ? "STANDBY" : "NO SIGNAL"}
+              {s.fault_code === "STREAM_STOPPED"
+                ? "STOPPED"
+                : s.fault_code === "IDLE_EXPECTED_OFF"
+                ? "STANDBY"
+                : "NO SIGNAL"}
             </span>
           ) : s.encrypted ? (
             <span

@@ -4,6 +4,7 @@ export type RedundancyType = "single" | "dual_hardware" | "makito_bonding";
 export type GroupSeverity =
   | "HEALTHY"
   | "IDLE"
+  | "STOPPED"
   | "DEGRADED_PROTECTED"
   | "DEGRADED_SINGLE"
   | "CRITICAL_OUTAGE";
@@ -48,6 +49,9 @@ export interface ChannelSample {
   path_medium: string;
   has_native_stats: boolean;
   encrypted: boolean;
+  video_fps?: number;
+  video_resolution?: string;
+  video_codec?: string;
   fault_code: string;
   fault_layer: string;
   fault_summary: string;
@@ -96,6 +100,7 @@ export interface SignalGroupConfig {
   name: string;
   direction: Direction;
   redundancy_type: RedundancyType;
+  enabled?: boolean;
   expected_active: boolean;
   notes?: string;
   legs: LegConfig[];
@@ -133,6 +138,7 @@ export interface SignalGroupLiveView {
   direction: Direction;
   direction_label: string;
   redundancy_type: RedundancyType;
+  enabled: boolean;
   expected_active: boolean;
   notes?: string;
   severity: GroupSeverity;

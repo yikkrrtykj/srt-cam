@@ -31,6 +31,7 @@ type FaultCode string
 const (
 	FaultHealthy            FaultCode = "HEALTHY"
 	FaultIdleExpectedOff    FaultCode = "IDLE_EXPECTED_OFF"
+	FaultStreamStopped      FaultCode = "STREAM_STOPPED"
 	FaultCloudProcessDown   FaultCode = "CLOUD_PROCESS_DOWN"
 	FaultCloudUDPBufDrop    FaultCode = "CLOUD_UDP_BUF_DROP"
 	FaultUpstreamOffline    FaultCode = "UPSTREAM_OFFLINE"
@@ -48,6 +49,7 @@ type GroupSeverity string
 const (
 	SeverityHealthy           GroupSeverity = "HEALTHY"
 	SeverityIdle              GroupSeverity = "IDLE"
+	SeverityStopped           GroupSeverity = "STOPPED"
 	SeverityDegradedProtected GroupSeverity = "DEGRADED_PROTECTED"
 	SeverityDegradedSingle    GroupSeverity = "DEGRADED_SINGLE"
 	SeverityCriticalOutage    GroupSeverity = "CRITICAL_OUTAGE"
@@ -100,9 +102,12 @@ type ChannelSample struct {
 	DstPeerIP     string  `json:"dst_peer_ip"`
 
 	// Path metadata & telemetry quality
-	PathMedium     string `json:"path_medium"`      // WAN, LO, WAN+LO, -
-	HasNativeStats bool   `json:"has_native_stats"` // true if Mode A JSON stats or Mode B passd stats observed
-	Encrypted      bool   `json:"encrypted"`
+	PathMedium      string  `json:"path_medium"`                // WAN, LO, WAN+LO, -
+	HasNativeStats  bool    `json:"has_native_stats"`           // true if Mode A JSON stats or Mode B passd stats observed
+	Encrypted       bool    `json:"encrypted"`
+	VideoFPS        float64 `json:"video_fps,omitempty"`        // detected from Mode A preview stream probe
+	VideoResolution string  `json:"video_resolution,omitempty"` // e.g. "1920x1080"
+	VideoCodec      string  `json:"video_codec,omitempty"`      // e.g. "H.264", "HEVC"
 
 	// Layer 4: single-channel automatic fault isolation
 	FaultCode    FaultCode `json:"fault_code"`
@@ -190,6 +195,7 @@ type SignalGroupLiveView struct {
 	Direction       Direction      `json:"direction"`
 	DirectionLabel  string         `json:"direction_label"`
 	RedundancyType  RedundancyType `json:"redundancy_type"`
+	Enabled         bool           `json:"enabled"`
 	ExpectedActive  bool           `json:"expected_active"`
 	Notes           string         `json:"notes,omitempty"`
 	Severity        GroupSeverity  `json:"severity"`

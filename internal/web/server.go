@@ -26,6 +26,9 @@ import (
 // RestartFunc restarts a single local channel container.
 type RestartFunc func(ctx context.Context, channelID string) error
 
+// PowerFunc starts (start=true) or stops (start=false) a single local channel container.
+type PowerFunc func(ctx context.Context, channelID string, start bool) error
+
 // OverviewResponse is the unified multi-node bidirectional payload served to the dashboard.
 type OverviewResponse struct {
 	EventName string                      `json:"event_name"`
@@ -172,6 +175,8 @@ type Server struct {
 	authMgr         *auth.Manager
 	clusterMgr      *cluster.Manager
 	restartFn       RestartFunc
+	powerFn         PowerFunc
+	refreshFn       func()
 	logsFn          LogsFunc
 	thumbnailFn     ThumbnailFunc
 	testFeishu      func(ctx context.Context) error
@@ -215,6 +220,22 @@ func NewServer(
 // SetLogsFunc attaches the local container log fetcher used by the Logs tab and peer log proxy.
 func (s *Server) SetLogsFunc(fn LogsFunc) {
 	s.logsFn = fn
+}
+
+// SetPowerFunc attaches the local single-container start/stop handler for Haivision-style stream switches.
+func (s *Server) SetPowerFunc(fn PowerFunc) {
+	s.powerFn = fn
+}
+
+// SetRefreshFunc attaches a non-blocking wakeup callback to push an immediate SSE refresh after mutations.
+func (s *Server) SetRefreshFunc(fn func()) {
+	s.refreshFn = fn
+}
+
+func (s *Server) triggerRefresh() {
+	if s.refreshFn != nil {
+		s.refreshFn()
+	}
 }
 
 // SetThumbnailFunc attaches the local keyframe thumbnail fetcher used by UI cards and peer proxy.
@@ -280,6 +301,7 @@ func (s *Server) UpdateSnapshot(local model.NodeLiveStatus, allNodes map[string]
 func BuildSignalGroupViews(sheet config.EventSheet, allNodes map[string]model.NodeLiveStatus) []model.SignalGroupLiveView {
 	out := make([]model.SignalGroupLiveView, 0, len(sheet.SignalGroups))
 	for _, grp := range sheet.SignalGroups {
+		enabled := grp.IsEnabled()
 		legs := make([]model.LegLiveView, 0, len(grp.Legs))
 		for _, leg := range grp.Legs {
 			node, ok := allNodes[leg.NodeID]
@@ -314,6 +336,14 @@ func BuildSignalGroupViews(sheet config.EventSheet, allNodes map[string]model.No
 					sample.FaultSummary = fmt.Sprintf("云端节点 %s 失联（%s）", leg.NodeID, node.Error)
 				}
 			}
+			if !enabled {
+				sample.FaultCode = model.FaultStreamStopped
+				sample.FaultLayer = "none"
+				sample.FaultSummary = "已停止"
+				sample.VideoFPS = 0
+				sample.VideoResolution = ""
+				sample.VideoCodec = ""
+			}
 
 			legs = append(legs, model.LegLiveView{
 				Role:       leg.Role,
@@ -340,6 +370,7 @@ func BuildSignalGroupViews(sheet config.EventSheet, allNodes map[string]model.No
 			Direction:      grp.Direction,
 			DirectionLabel: sheet.DirectionLabel(grp.Direction),
 			RedundancyType: grp.RedundancyType,
+			Enabled:        enabled,
 			ExpectedActive: grp.ExpectedActive,
 			Notes:          grp.Notes,
 			Severity:       sev,
@@ -371,6 +402,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/event-sheet", s.withAuth(s.handleGetEventSheet))
 	mux.HandleFunc("PUT /api/v1/event-sheet", s.withAuth(s.handlePutEventSheet))
 	mux.HandleFunc("PATCH /api/v1/signal-groups/{groupID}/expected-active", s.withAuth(s.handleToggleExpectedActive))
+	mux.HandleFunc("PATCH /api/v1/signal-groups/{groupID}/enabled", s.withAuth(s.handleSetGroupEnabled))
 	mux.HandleFunc("POST /api/v1/channels/{nodeID}/{channelID}/restart", s.withAuth(s.handleRestartChannel))
 	mux.HandleFunc("GET /api/v1/channels/{nodeID}/{channelID}/logs", s.withAuth(s.handleChannelLogs))
 	mux.HandleFunc("GET /api/v1/channels/{nodeID}/{channelID}/thumbnail", s.withAuth(s.handleChannelThumbnail))
@@ -392,6 +424,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/peer/logs", s.withClusterAuth(s.handlePeerLogs))
 	mux.HandleFunc("GET /api/peer/thumbnail", s.withClusterAuth(s.handlePeerThumbnail))
 	mux.HandleFunc("POST /api/peer/restart", s.withClusterAuth(s.handlePeerRestart))
+	mux.HandleFunc("POST /api/peer/channel-power", s.withClusterAuth(s.handlePeerChannelPower))
 
 	// Embedded SPA static frontend
 	if s.staticFS != nil {
@@ -642,6 +675,15 @@ func (s *Server) handlePutEventSheet(w http.ResponseWriter, r *http.Request, use
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无效 JSON 格式：" + err.Error()})
 		return
 	}
+	if err := config.ValidateEventSheet(next); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	cur := s.events.Get()
+	if err := config.ValidateEditLock(cur, next); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := s.events.Save(next); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -653,6 +695,7 @@ func (s *Server) handlePutEventSheet(w http.ResponseWriter, r *http.Request, use
 		Target:   next.EventName,
 		Detail:   fmt.Sprintf("更新场次信号表（共 %d 组逻辑信号）", len(next.SignalGroups)),
 	})
+	s.triggerRefresh()
 	writeJSON(w, http.StatusOK, next)
 }
 
@@ -677,7 +720,105 @@ func (s *Server) handleToggleExpectedActive(w http.ResponseWriter, r *http.Reque
 		Target:   groupID,
 		Detail:   fmt.Sprintf("expected_active=%v", body.ExpectedActive),
 	})
+	s.triggerRefresh()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "event_sheet": sheet})
+}
+
+func (s *Server) handleSetGroupEnabled(w http.ResponseWriter, r *http.Request, user string) {
+	groupID := r.PathValue("groupID")
+	var body struct {
+		Enabled bool `json:"enabled"`
+		Force   bool `json:"force"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+
+	cur := s.events.Get()
+	var target *config.SignalGroupConfig
+	for i := range cur.SignalGroups {
+		if cur.SignalGroups[i].ID == groupID {
+			target = &cur.SignalGroups[i]
+			break
+		}
+	}
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "未找到该信号通道"})
+		return
+	}
+
+	// Safety guard: require explicit confirmation before stopping an active broadcast stream.
+	if !body.Enabled && !body.Force {
+		maxMbps := 0.0
+		s.mu.RLock()
+		for _, g := range s.overview.Groups {
+			if g.ID == groupID {
+				for _, leg := range g.Legs {
+					if leg.NodeOnline && leg.Sample.SrcMbps > maxMbps {
+						maxMbps = leg.Sample.SrcMbps
+					}
+				}
+				break
+			}
+		}
+		s.mu.RUnlock()
+		if maxMbps >= 0.1 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":       fmt.Sprintf("信号「%s」当前正在传输 %.1f Mb/s，请二次确认后再停止", target.Name, maxMbps),
+				"active_mbps": maxMbps,
+			})
+			return
+		}
+	}
+
+	// Control every leg's data-plane container (local Docker or remote peer VPS).
+	for _, leg := range target.Legs {
+		var err error
+		if leg.NodeID == s.cfg.NodeID {
+			if s.powerFn != nil {
+				err = s.powerFn(r.Context(), leg.ChannelID, body.Enabled)
+			}
+		} else {
+			err = s.clusterMgr.SetPeerChannelPower(r.Context(), leg.NodeID, leg.ChannelID, body.Enabled, user)
+		}
+		if err != nil {
+			opText := "停止"
+			if body.Enabled {
+				opText = "启动"
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": fmt.Sprintf("%s通道 %s/%s 失败：%v", opText, leg.NodeID, leg.ChannelID, err),
+			})
+			return
+		}
+	}
+
+	sheet, err := s.events.SetEnabled(groupID, body.Enabled)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	action := "stop_signal_stream"
+	detail := fmt.Sprintf("停止信号流「%s」（容器已停止，参数已解锁）", target.Name)
+	if body.Enabled {
+		action = "start_signal_stream"
+		detail = fmt.Sprintf("启动信号流「%s」（容器已运行，传输参数已锁定）", target.Name)
+	}
+	_ = s.store.InsertAudit(r.Context(), model.AuditEntry{
+		Username: user,
+		NodeID:   s.cfg.NodeID,
+		Action:   action,
+		Target:   target.Name,
+		Detail:   detail,
+	})
+	s.triggerRefresh()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"enabled":     body.Enabled,
+		"event_sheet": sheet,
+	})
 }
 
 func (s *Server) handleRestartChannel(w http.ResponseWriter, r *http.Request, user string) {
@@ -1174,6 +1315,46 @@ func (s *Server) handlePeerRestart(w http.ResponseWriter, r *http.Request) {
 		Target:   body.ChannelID,
 		Detail:   "由集群控制台发起的单路安全重启",
 	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handlePeerChannelPower(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ChannelID string `json:"channel_id"`
+		Action    string `json:"action"` // start | stop
+		Operator  string `json:"operator"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&body); err != nil || body.ChannelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if body.Action != "start" && body.Action != "stop" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "action must be start or stop"})
+		return
+	}
+	if s.powerFn == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "power control not configured"})
+		return
+	}
+	start := body.Action == "start"
+	if err := s.powerFn(r.Context(), body.ChannelID, start); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	actionName := "stop_signal_stream"
+	detail := "由集群控制台停止单路容器"
+	if start {
+		actionName = "start_signal_stream"
+		detail = "由集群控制台启动单路容器"
+	}
+	_ = s.store.InsertAudit(r.Context(), model.AuditEntry{
+		Username: "peer:" + body.Operator,
+		NodeID:   s.cfg.NodeID,
+		Action:   actionName,
+		Target:   body.ChannelID,
+		Detail:   detail,
+	})
+	s.triggerRefresh()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

@@ -139,3 +139,52 @@ func (d *DockerClient) Restart(ctx context.Context, name string, timeoutSec int)
 	}
 	return nil
 }
+
+// Start starts a single stopped channel container without touching any sibling channel.
+// HTTP 204 (started) and 304 (already running) are both treated as success.
+func (d *DockerClient) Start(ctx context.Context, name string) error {
+	endpoint := fmt.Sprintf("http://docker/containers/%s/start", url.PathEscape(name))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("容器 %s 尚未创建，请先启动数据面容器", name)
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return fmt.Errorf("docker start %s: HTTP %d (%s)", name, resp.StatusCode, string(body))
+}
+
+// Stop cleanly stops a single running channel container without touching any sibling channel.
+// HTTP 204 (stopped), 304 (already stopped), and 404 (not created) are treated as stopped.
+func (d *DockerClient) Stop(ctx context.Context, name string, timeoutSec int) error {
+	if timeoutSec <= 0 {
+		timeoutSec = 5
+	}
+	endpoint := fmt.Sprintf("http://docker/containers/%s/stop?t=%d", url.PathEscape(name), timeoutSec)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent ||
+		resp.StatusCode == http.StatusNotModified ||
+		resp.StatusCode == http.StatusNotFound ||
+		resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return fmt.Errorf("docker stop %s: HTTP %d (%s)", name, resp.StatusCode, string(body))
+}

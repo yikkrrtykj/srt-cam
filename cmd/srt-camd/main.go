@@ -96,6 +96,14 @@ func main() {
 		webassets.Dist,
 	)
 	srv.SetLogsFunc(col.ChannelLogs)
+	srv.SetPowerFunc(col.SetLocalChannelPower)
+	refreshCh := make(chan struct{}, 1)
+	srv.SetRefreshFunc(func() {
+		select {
+		case refreshCh <- struct{}{}:
+		default:
+		}
+	})
 	srv.SetThumbnailFunc(func(channelID string) ([]byte, string, bool) {
 		previewMgr.Touch(channelID)
 		snap, ok := previewMgr.Snapshot(channelID, 30*time.Second)
@@ -159,6 +167,8 @@ func main() {
 			select {
 			case <-ctx.Done():
 				return
+			case <-refreshCh:
+				runCycle(ctx, cfg, evStore, col, clusterMgr, store, alertMgr, previewMgr, srv)
 			case <-ticker.C:
 				runCycle(ctx, cfg, evStore, col, clusterMgr, store, alertMgr, previewMgr, srv)
 			case <-pruneTicker.C:
@@ -206,6 +216,18 @@ func runCycle(
 	sheet := evStore.Get()
 	previewMgr.SyncEventSheet(cfg.NodeID, sheet)
 	localStatus, samples := col.CollectOnce(ctx, sheet)
+	if !cfg.DemoMode {
+		for cid, sample := range localStatus.Channels {
+			if sample.Mode == model.ModeSRTRelay && sample.SrcConnected && sample.SrcMbps >= 0.1 {
+				if meta, ok := previewMgr.VideoMeta(cid, 35*time.Second); ok {
+					sample.VideoFPS = meta.FPS
+					sample.VideoResolution = meta.Resolution
+					sample.VideoCodec = meta.Codec
+					localStatus.Channels[cid] = sample
+				}
+			}
+		}
+	}
 	_ = store.InsertSamples(ctx, localStatus.Host, samples)
 
 	clusterMgr.PollPeers(ctx, sheet)

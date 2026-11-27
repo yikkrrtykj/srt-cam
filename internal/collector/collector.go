@@ -27,6 +27,7 @@ type Collector struct {
 	cursors       map[string]ParseCursors
 	lastSrcPeerIP map[string]string
 	lastDstPeerIP map[string]string
+	demoStopped   map[string]bool
 	demoStart     time.Time
 }
 
@@ -41,6 +42,7 @@ func New(cfg config.NodeConfig) *Collector {
 		cursors:       make(map[string]ParseCursors),
 		lastSrcPeerIP: make(map[string]string),
 		lastDstPeerIP: make(map[string]string),
+		demoStopped:   make(map[string]bool),
 		demoStart:     time.Now(),
 	}
 }
@@ -83,6 +85,24 @@ func (c *Collector) RestartLocalChannel(ctx context.Context, channelID string) e
 		return nil
 	}
 	return c.docker.Restart(ctx, channelID, 5)
+}
+
+// SetLocalChannelPower starts or stops a single local channel container.
+func (c *Collector) SetLocalChannelPower(ctx context.Context, channelID string, start bool) error {
+	if c.cfg.DemoMode {
+		c.mu.Lock()
+		if start {
+			delete(c.demoStopped, channelID)
+		} else {
+			c.demoStopped[channelID] = true
+		}
+		c.mu.Unlock()
+		return nil
+	}
+	if start {
+		return c.docker.Start(ctx, channelID)
+	}
+	return c.docker.Stop(ctx, channelID, 5)
 }
 
 // ChannelLogs fetches recent timestamped container stdout/stderr logs for one local channel.
@@ -230,6 +250,7 @@ func (c *Collector) CollectOnce(ctx context.Context, sheet config.EventSheet) (m
 			Carrier:        entry.leg.Carrier,
 			SrcDevice:      entry.leg.SrcDevice,
 			DstDevice:      entry.leg.DstDevice,
+			StreamDisabled: !entry.grp.IsEnabled(),
 			ExpectedActive: entry.grp.ExpectedActive,
 			PrevRestarts:   prevR,
 		}
@@ -524,20 +545,31 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 				dstPeerIP = fmt.Sprintf("198.51.100.%d", 51+idx)
 			}
 
+			c.mu.Lock()
+			stopped := !grp.IsEnabled() || c.demoStopped[leg.ChannelID]
+			c.mu.Unlock()
+
+			procState := "running"
+			uptime := 86400*4 + int64(elapsed)
+			if stopped {
+				procState = "exited"
+				uptime = 0
+			}
+
 			s := model.ChannelSample{
 				Timestamp:      now.Unix(),
 				NodeID:         c.cfg.NodeID,
 				ChannelID:      leg.ChannelID,
 				Mode:           leg.Mode,
-				ProcessState:   "running",
+				ProcessState:   procState,
 				RestartCount:   0,
-				UptimeSec:      86400*4 + int64(elapsed),
-				HasNativeStats: true,
+				UptimeSec:      uptime,
+				HasNativeStats: !stopped,
 				Encrypted:      leg.Mode == model.ModeUDPPassthrough,
 				PathMedium:     "WAN",
 			}
 
-			if grp.ExpectedActive {
+			if !stopped && grp.ExpectedActive {
 				s.SrcPeerIP = srcPeerIP
 				s.DstPeerIP = dstPeerIP
 				s.SrcConnected = true
@@ -558,6 +590,13 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 					s.DstLinkBWMbps = 42.0 + 3.5*math.Cos(elapsed/20.0+float64(idx))
 					s.SrcMaxBWMbps = 1000
 					s.DstMaxBWMbps = 1000
+					if idx%2 == 0 {
+						s.VideoFPS = 59.94
+					} else {
+						s.VideoFPS = 50
+					}
+					s.VideoResolution = "1920x1080"
+					s.VideoCodec = "H.264"
 				}
 
 				// Show ARQ recovery with 0 unrecovered drops on healthy routes so Recovered vs Dropped is clear
@@ -617,6 +656,7 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 				Carrier:        leg.Carrier,
 				SrcDevice:      leg.SrcDevice,
 				DstDevice:      leg.DstDevice,
+				StreamDisabled: !grp.IsEnabled(),
 				ExpectedActive: grp.ExpectedActive,
 				PrevRestarts:   0,
 			}
