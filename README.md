@@ -1,133 +1,166 @@
-# SRT CAM — 10-channel lightweight SRT relay
+# SRT-CAM — 多路 SRT 直播信号中转与电视监控墙
 
-A lightweight Docker deployment of Haivision **SRT Tools `srt-live-transmit`** (not the commercial Haivision SRT Gateway) and a **read-only, on-demand** `srt-status` command. Based on the original field deployment document and 10-channel Compose configuration.
+这是一个部署在云服务器（VPS）上的 **轻量级广电 SRT 信号中转 + 网页监看控制台**。
 
-## Deployment (new Ubuntu/Debian VPS only)
-
-```bash
-git clone https://github.com/yikkrrtykj/srt-cam.git
-cd srt-cam
-sudo bash install.sh --dry-run
-sudo bash install.sh
-sudo srt-status -s 6
-```
-
-The installer checks for existing `srt-cam*` containers and bound SRT UDP ports before installation and **refuses to overwrite an existing relay**. An already-managed installation is left running on repeat execution. On an existing production VPS, install **only the diagnostic tool**:
-
-```bash
-git clone https://github.com/yikkrrtykj/srt-cam.git
-cd srt-cam
-sudo bash install.sh --status-only
-sudo srt-status -s 6
-```
-
-> `install.sh` changes the host (apt packages, sysctl buffer maximums, image build, service creation, and inbound UFW UDP rules **only if UFW is already active**). Read it before deploying. It does **not** enable UFW or change your cloud-provider firewall. `--status-only` does not alter running relay containers, their sysctl or firewall. New deployments still require a real SRT sender and receiver for acceptance.
-
-## Configuration
-
-| Channel | SRT sender (Caller) sends to VPS | SRT receiver (Caller) pulls from VPS |
-|---|---|---|
-| 1 | UDP 21111 | UDP 11111 |
-| 2 | UDP 21112 | UDP 11112 |
-| … | … | … |
-| 10 | UDP 21120 | UDP 11120 |
-
-Both sides use Caller; server endpoints are Listener. Ten independent Docker containers `srt-cam1` through `srt-cam10`, using host networking. The original YAML is preserved at [`archive/docker-compose.original.yml`](archive/docker-compose.original.yml).
-
-The default `srt-status.json` deliberately contains **no direction labels**. Assign labels only when the event's actual channel mapping is known, in `/etc/srt-status.json`. Set `expected_active` for channels scheduled for a test to distinguish idle from `CHECK NO TRAFFIC`. Existing files with exactly the old CAM6-only default are migrated automatically on `--status-only`; other custom files are preserved.
-
-`sudo srt-status -s 6` shows estimated media-size UDP RX/TX by channel, and distinguishes local loopback (`LO`, e.g. sing-box) vs direct WAN (`WAN`) on the gateway. **These are UDP payload estimates, not video bitrates, SRT loss statistics, or proof of picture quality.** Underlying TCP Reality can mask packet loss from an SRT receiver, but introduce delay or freezes. `FLOW` means only sampled traffic was observed.
-
-## Operational checks
-
-```bash
-docker ps --filter name=srt-cam
-docker logs --since 2m --tail 60 srt-cam6
-sudo srt-status -s 6
-```
-
-- No input: ask sender if vMix Output actually started; check sender → VPS UDP 2111x.
-- Input with no output: ask receiver if vMix Input is connected; check VPS UDP 1111x. `bytes lost` in `srt-live-transmit` relay logs can reflect the absence of a target and is **not** network packet-loss percentage.
-- Input and output but picture corrupted: inspect both **separate** SRT sessions, RTT, retransmits, late/skipped packets, codec and final vMix picture. A healthy server cannot establish where Internet packet loss occurs.
-- Check actual expected-active list before treating `IDLE/UNKNOWN` as a failure.
-
-The original [`srt中转网关.docx`](docs/srt中转网关.docx) is preserved verbatim; see [`docs/legacy-deployment.md`](docs/legacy-deployment.md) for its command-oriented Markdown transcription, and [`docs/runbook.md`](docs/runbook.md) for production notes and limitations.
-
-## Native SRT protocol diagnostics (opt-in, one channel)
-
-In a test/maintenance window, enable JSON counters on only CAM1, preserving 21111/11111 and the SRT URLs:
-
-```bash
-cd ~/srt-cam && git pull --ff-only
-sudo bash install.sh --status-only
-python3 scripts/enable-native-stats.py --cam 1              # dry run; no changes
-sudo python3 scripts/enable-native-stats.py --cam 1 --apply # restart ONLY CAM1
-sudo srt-status --srt 1 --minutes 2
-```
-
-**Interruption:** `--apply` backs up the ACTIVE Compose file (located from Docker labels), validates it, then force-recreates only CAM1. The original Compose project name is preserved. On failure it attempts to restore the original YAML/container. This is not a hot toggle; only do it during approved tests. The script refuses unfamiliar images, commands, and Compose layouts.
-
-Native `-stats:3000` means **every 3000 media packets**, not milliseconds. Reports go as JSON to normal Docker logs. SOURCE (21111) is the SRT receiver, TARGET (11111) is the SRT sender. Both have independent RTT and loss recovery. Output includes per-report interval `packetsLost`, `packetsRetransmitted`, `packetsDropped` and RX `msTsbPdDelay`. Values are not Internet loss percentages, and `msTsbPdDelay` does not prove remote vMix configuration. Idle/legacy streams show `NO STATS`, not zero loss. No new ports, dashboard or permanent capture.
-
-The original `srt-status -s 6` UDP estimate is unchanged.
-
-## Security and compatibility
-
-- Required UDP ingress: **11111–11120 and 21111–21120**. Restrict peer IPs using cloud firewall where possible.
-- No dashboard, DB, persistent packet captures, proxy interception, external pings, or iperf3.
-- Container image uses Ubuntu 22.04 + distro-provided `srt-tools`. On deployment, `docker build` needs internet access; runtime version should be verified in a test VPS.
-- Tested for script syntax and offline parser fixtures; **not yet validated end-to-end on a VPS in this PR**.
+你可以把它理解成一个“**开源精简版 Haivision 网关 + OBS 风格电视监控墙**”：
+- **前方现场**用编码器、手机（如 Larix Broadcaster）、OBS、vMix 或 Makito X4 往服务器推 SRT 流；
+- **演播室 / 导播台**用 vMix、解码器或播放器从服务器拉 SRT 流；
+- **值班 / 导播**打开浏览器直接投屏到电视上，一眼看清所有机位的画面、码率、分辨率、帧率、音频参数、丢包率和延迟。
 
 ---
 
-## SRT-CAM v2 Platform (Go + TypeScript + Dual-Mode Redundancy)
+## 核心功能（大白话版）
 
-v2 adds a **decoupled Go control plane (`srt-camd`) with an embedded TypeScript dashboard** and a **pure-Go Mode B UDP passthrough forwarder (`srt-passd`)** while keeping every media channel strictly isolated (restarting the web dashboard never interrupts live streams) and preserving full backward compatibility with v1 `srt-status` / `install.sh`.
+- **1 路信号 = 1 个独立容器，互不拖累**  
+  默认提供 10 路彼此隔离的 SRT 转发容器（`srt-cam1` ~ `srt-cam10`）。**更新网页控制台或重启其中某一路时，其他正在直播的信号完全不断流。**
+- **两种转发模式，按需选用**
+  - **模式 A（推拉中转，最常用）**：推流端和拉流端都用 **Caller（主动连接）** 模式连到云服务器，**现场和演播室都不需要公网 IP，也不用折腾路由器端口映射**。
+  - **模式 B（纯 UDP 透明转发，可选）**：给 Makito X4 等支持原厂双路无缝（Path Redundancy）的硬件用。服务器只做裸包转发，**不解密、不加缓冲**，只读取明文包头里的重传与弃包数据。
+- **Haivision 风格的「流开关」+ 参数保护锁**  
+  每条信号都有独立开关：开启后自动锁定端口、通道、模式等关键参数防止误改（信号名称和备注仍可随时修改）；关闭正在推流的通道前会弹出二次确认，防止手滑掐断直播。
+- **电视大屏一屏多画面监控墙**  
+  点击右上角 **「全屏监看」**，自动隐藏顶部导航栏和工具栏，1~16 路自动按 `1×1`、`2×1`、`2×2`、`3×2`、`3×3`、`4×3`、`4×4` 铺满一整块屏幕，**不出现纵向滚动条**，底部码率/视频/音频/丢包/时延条完整可见（悬停右上角或按 `ESC` 退出）。
+- **低开销实时画面预览 + 音视频体检**  
+  只有当浏览器打开监控墙时，后台才每 5 秒从旁路抽 1 帧 `960×540` 静帧图片，并顺带读出分辨率、编码、帧率、音频编码/采样率/码率/声道。**不影响主路 SRT 转发延迟，没人看网页时额外 CPU 占用为 0%。**
+- **一眼定位故障段 + 飞书告警**  
+  点进任意机位的「工作台」，可看 5 分钟 ~ 24 小时延迟/码率/丢包曲线，自动判断问题出在 **推流端、中转服务器还是拉流端**；支持接入飞书群机器人自动发告警和恢复通知。
+- **多台服务器统一管理**  
+  如果你在海外和国内租了多台 VPS，可以在网页顶部 **「服务器」** 里把它们串到同一个监控墙里统一查看和启停。
 
-### Key Capabilities
-- **Dual Data-Plane Modes**:
-  - **Mode A (`srt-relay`)**: Upgraded Haivision `libsrt 1.5.x` (`deploy/Dockerfile.relay`) 10-channel isolated containers (`2111x / 1111x`) with native JSON stats and bounded log rotation (`deploy/docker-compose.v2.yml`). Ideal for vMix, rapid dual-Caller setup, and dual-hardware redundancy.
-  - **Mode B (`udp-passthrough`)**: Pure-Go L4 UDP forwarder (`cmd/srt-passd`, `deploy/Dockerfile.pass`) for **dual-VPS + Makito X4 native Path Redundancy (hitless failover)** with read-only 16-byte SRT header telemetry (zero decryption, zero added SRT buffering latency).
-- **Bidirectional Multi-VPS Control Plane (`cmd/srt-camd`)**:
-  - Aggregates arbitrary **N VPS nodes** into one dashboard organized by direction (**Venue → Hub** and **Hub → Venue**) and paired **Logical Signal Groups** (primary/backup).
-  - **4-Layer Synchronized Timeline & Automatic Fault Isolation**: Linked ECharts timeline across Layer 1 (Upstream), Layer 2 (Cloud Host CPU / Container 0-Restart / `/proc/net/snmp` UDP buffer drops), Layer 3 (Downstream + `LO/WAN` proxy detection), and Layer 4 (Primary/Backup Fault Band), backed by 7-day SQLite WAL storage and **Evidence Screenshot Mode + PNG Export**.
-  - **Tiered Feishu Alerts**: Debounced interactive cards distinguishing **🟡 Protected Failover (backup carrying live)** vs **🔴 Critical Outage**, with automatic recovery notices and backup-node independent watchdog.
-  - **Safe Operations**: Public browser login (bcrypt + HttpOnly cookie + brute-force lockout, `deploy/Caddyfile.example` for HTTPS) and single-channel restart requiring explicit channel-name confirmation + SQLite audit log.
+---
 
-### Build & Local Demo Preview
+## 新服务器 3 步快速部署（推荐 Docker 方式）
+
+> 适用系统：全新 Ubuntu / Debian 云服务器，装好 Docker 即可（服务器上**不需要**装 Go 或 Node.js）。
+
+### 第 1 步：在云服务器安全组 / 防火墙放行端口
+
+| 端口 | 协议 | 用途 |
+|---|---|---|
+| `8080`（可自定义） | TCP | 网页监控台登录与管理 |
+| `20001` – `20010` | UDP | 10 路 SRT **推流**端口（现场端往这里推） |
+| `21001` – `21010` | UDP | 10 路 SRT **拉流**端口（接收端从这里拉） |
+| `31111`+（可选） | UDP | 仅使用模式 B（Makito 透明转发）时需要 |
+
+### 第 2 步：拉取代码、编译镜像并一键启动
 
 ```bash
-# 1. Build embedded TypeScript frontend
-cd web && npm install && npm run build && cd ..
+git clone https://github.com/yikkrrtykj/srt-cam.git
+cd srt-cam
 
-# 2. Build zero-CGO single binaries
-CGO_ENABLED=0 go build -o bin/srt-camd ./cmd/srt-camd
-CGO_ENABLED=0 go build -o bin/srt-passd ./cmd/srt-passd
+# 编译网页控制台镜像（内含前端页面、Go 控制面和 ffmpeg）
+docker build -f deploy/Dockerfile.camd -t srt-camd:v2 .
 
-# 3. Generate bcrypt password hash for config.json
-./bin/srt-camd hash-password --password 'YourStrongPassword'
+# 生成配置并一键启动 10 路 SRT 通道 + 网页控制台
+# 运行后会提示你设置登录密码
+bash scripts/init-v2-node.sh --node-id vps-1 --port 8080 --up
+```
 
-# 4. Run instant offline 3-VPS bidirectional demo (no Docker required)
-./bin/srt-camd --demo --events deploy/event-sheet.example.json --listen 127.0.0.1:8080
+看到输出访问地址后，浏览器打开 `http://<你的服务器IP>:8080` 登录即可使用（默认账号 `admin`，密码为你刚才输入的密码）。
 
-# Or build & run with Docker only (no Go/Node needed on the VPS):
+### 第 3 步：日常更新网页控制台（不断流）
+
+以后有新版本时，只需要重编控制面容器 `srt-camd`，**不会中断正在推流的 10 路 SRT 通道**：
+
+```bash
+cd ~/srt-cam && git pull --ff-only && \
+docker build -f deploy/Dockerfile.camd -t srt-camd:v2 . && \
+docker rm -f srt-camd && \
+docker run -d --name srt-camd --restart unless-stopped --network host \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/deploy:/etc/srt-cam" \
+  -v /var/lib/srt-cam:/var/lib/srt-cam \
+  srt-camd:v2 --config /etc/srt-cam/config.json --events /etc/srt-cam/event-sheet.json
+```
+
+---
+
+## 默认 10 路端口对照表（模式 A）
+
+推流端和拉流端**全部选择 Caller 模式**，直接填下面地址即可（在网页「通道配置」或「工作台」里也可以一键复制）：
+
+| 通道名 | 推流地址（现场编码器 / OBS / Larix） | 拉流地址（演播室 vMix / 解码器） |
+|---|---|---|
+| `srt-cam1` | `srt://<服务器IP>:20001` | `srt://<服务器IP>:21001` |
+| `srt-cam2` | `srt://<服务器IP>:20002` | `srt://<服务器IP>:21002` |
+| `srt-cam3` | `srt://<服务器IP>:20003` | `srt://<服务器IP>:21003` |
+| … | … | … |
+| `srt-cam10` | `srt://<服务器IP>:20010` | `srt://<服务器IP>:21010` |
+
+> 小提示：建议 SRT 缓冲延迟（Latency）设为往返时延（RTT）的 **4 倍以上**。例如服务器 RTT 在 200ms 左右时，编码器和接收端把 Latency 设为 `1000ms` 以上会稳很多。
+
+---
+
+## 怎么看懂监控墙上的状态和参数？
+
+### 1. 顶部两个开关的区别
+- **流开关（绿 / 灰）**：控制底层 Docker 转发容器的启动与停止。打开后锁定端口等传输参数；关闭后通道彻底停机（显示「已停止」）。
+- **断流告警**：控制**无信号时是否报红**以及**是否推送飞书告警**。
+  - 关闭时：没推流就安静显示「待机」，不发飞书；**一旦开始推流，仍然会如实显示「正常 / 信号波动 / 严重丢包 / 待拉流」**。
+  - 开启时：一旦断流或丢包波动，会标红并按防抖规则推送飞书提醒。
+
+### 2. 状态标签含义
+
+| 状态 | 颜色 | 含义 |
+|---|---|---|
+| `正常` | 绿色 | 推流和拉流都在稳定传输，无明显丢包和高延迟 |
+| `待拉流` | 黄色 | 现场已经把流推上来了，正在等演播室/接收端连上来拉流 |
+| `信号波动` | 黄色 | 链路出现可恢复的重传丢包，或时延偏高（画面通常还能靠 SRT 重传保住，但要注意） |
+| `严重丢包` | 红色 | 出现了**来不及重传的弃包**，接收端画面大概率会卡顿或花屏 |
+| `备路接管` | 黄色 | 主备双路信号中有一路异常，但另一路正常在线兜底 |
+| `信号中断` | 红色 | 已开启断流告警，且当前无流或通道故障 |
+| `待机` | 灰色 | 容器开着、告警没开、目前没人推流 |
+| `已停止` | 灰色 | 流开关已手动关闭，转发容器处于停止状态 |
+
+### 3. 底部 5 项实时指标
+- **码率**：当前实测的 SRT 传输总码率（如 `12.4 Mb/s`），包含音视频和传输封装开销。
+- **视频**：直接显示分辨率、编码格式和帧率（如 `1920x1080 · H.264 · 50 fps`）。
+- **音频**：直接显示编码格式、采样率、音频码率和声道（如 `AAC · 48k · 192k · 立体声`；多音轨会标注 `×2`；有画面没声音会黄字提示 `无音轨`）。
+- **丢包率**：
+  - `0 (0.0%)`：非常干净；
+  - `62 (3.8%)`（黄字）：网络有丢包，但 SRT 自动重传救回来了；
+  - `弃731 (36.3%)`（红字）：超过缓冲时间没救回来的**未恢复弃包**，需要检查网络或调大 SRT 缓冲。
+- **时延**：推流端到中转服务器的往返延迟（RTT，单位毫秒）。
+
+---
+
+## 常用维护命令
+
+```bash
+# 查看所有转发容器和控制台状态
+docker ps --filter "name=srt-"
+
+# 查看某一路（例如 srt-cam1）最近 2 分钟日志
+docker logs --since 2m --tail 60 srt-cam1
+
+# 查看控制台自身日志
+docker logs --tail 60 srt-camd
+```
+
+---
+
+## 本地离线预览（不连真服务器也能体验界面）
+
+如果想先在自己电脑上看看监控墙、工作台和多节点切换效果，可以直接跑内置的模拟数据模式：
+
+```bash
+# 方式一：本地有 Go + Node.js
+make demo
+
+# 方式二：只用 Docker
 docker build -f deploy/Dockerfile.camd -t srt-camd:v2 .
 docker run --rm -p 8080:8080 -v "$PWD/deploy:/etc/srt-cam:ro" srt-camd:v2 \
   --demo --events /etc/srt-cam/event-sheet.example.json --listen 0.0.0.0:8080
 ```
 
-### Real Mode A Keyframe Thumbnails & Direct `IP:Port` Deployment
+然后浏览器打开 `http://127.0.0.1:8080` 即可直接预览。
 
-- **Real 5-second Mode A Thumbnails (zero CPU when idle)**:
-  - `deploy/Dockerfile.relay` builds `srt-relayd` alongside Haivision `libsrt 1.5.4`. In `deploy/docker-compose.v2.yml`, Mode A containers (`srt-cam1..10`) expose a loopback-only on-demand MPEG-TS tap (`PREVIEW_HTTP_ADDR=127.0.0.1:29111..29120`).
-  - `deploy/Dockerfile.camd` bundles `ffmpeg`. When a browser is open, `srt-camd` automatically discovers `http://127.0.0.1:<in_port+8000>/ts`, checks `/healthz` for active video flow, and grabs 1 keyframe every 5s (max 2 concurrent `ffmpeg` jobs; 0% CPU when nobody is viewing). Encrypted Mode B passthrough channels display an `AES` badge without touching ciphertext.
-- **Quick `IP:Port` + Password Setup (no domain required)**:
-  ```bash
-  docker build -f deploy/Dockerfile.camd -t srt-camd:v2 .
-  bash scripts/init-v2-node.sh --node-id vps-1 --port 8080
-  ```
-  Start the Mode A relay stack with `docker compose -f deploy/docker-compose.v2.yml up -d` and launch `srt-camd` with `--network host` (command printed by `init-v2-node.sh`).
+---
 
-See [`deploy/config.example.json`](deploy/config.example.json), [`deploy/event-sheet.example.json`](deploy/event-sheet.example.json), [`deploy/srt-camd.service`](deploy/srt-camd.service), and the step-by-step [`docs/makito-redundancy-guide.md`](docs/makito-redundancy-guide.md) for test VPS deployment and Makito X4 unplug-test acceptance.
+## 进阶文档与旧版（v1）兼容说明
 
-
+- **HTTPS 域名反向代理配置**：参考 [`deploy/Caddyfile.example`](deploy/Caddyfile.example)
+- **systemd 宿主机托管示例**：参考 [`deploy/srt-camd.service`](deploy/srt-camd.service)
+- **Makito X4 双服务器无缝热备实操手册**：参考 [`docs/makito-redundancy-guide.md`](docs/makito-redundancy-guide.md)
+- **配置与通道表示例**：[`deploy/config.example.json`](deploy/config.example.json)、[`deploy/event-sheet.example.json`](deploy/event-sheet.example.json)
+- **旧版 v1 脚本兼容**：仓库依然完整保留了早期 v1 版本的 `install.sh`、`srt-status` 命令行诊断工具（对应旧端口 `21111–21120` / `11111–11120`）以及原始文档 [`docs/legacy-deployment.md`](docs/legacy-deployment.md) 和 [`docs/runbook.md`](docs/runbook.md)，老机器执行 `sudo bash install.sh --status-only` 仍可只装诊断命令而不覆盖已有容器。
