@@ -19,18 +19,31 @@ export function RouteThumbnail({ leg, label, size = "sm" }: Props) {
     return () => window.clearInterval(timer);
   }, []);
 
+  const s = leg.sample;
+  const flowing = leg.node_online && s.src_connected && s.src_mbps >= 0.1;
+
   useEffect(() => {
     let active = true;
     let prevObjectURL: string | null = null;
+    let retryTimer: number | null = null;
 
-    async function load() {
+    async function load(allowRetry: boolean) {
       const url = `/api/v1/channels/${encodeURIComponent(leg.node_id)}/${encodeURIComponent(
         leg.channel_id
       )}/thumbnail?label=${encodeURIComponent(label)}&t=${tick}`;
       try {
         const res = await fetch(url, { credentials: "same-origin", cache: "no-store" });
         if (!active) return;
-        if (res.status === 204 || !res.ok) {
+        if (res.status === 204) {
+          setImgSrc(null);
+          if (allowRetry && tick === 0 && flowing) {
+            retryTimer = window.setTimeout(() => {
+              if (active) void load(false);
+            }, 2000);
+          }
+          return;
+        }
+        if (!res.ok) {
           setImgSrc(null);
           return;
         }
@@ -47,17 +60,16 @@ export function RouteThumbnail({ leg, label, size = "sm" }: Props) {
       }
     }
 
-    void load();
+    void load(true);
     return () => {
       active = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       if (prevObjectURL) {
         URL.revokeObjectURL(prevObjectURL);
       }
     };
-  }, [leg.node_id, leg.channel_id, label, tick]);
+  }, [leg.node_id, leg.channel_id, flowing, label, tick]);
 
-  const s = leg.sample;
-  const flowing = leg.node_online && s.src_connected && s.src_mbps >= 0.1;
   const cls = size === "md" ? "hv-thumb hv-thumb-md" : "hv-thumb";
 
   if (imgSrc) {

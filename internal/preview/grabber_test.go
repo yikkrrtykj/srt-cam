@@ -2,17 +2,20 @@ package preview
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/yikkrrtykj/srt-cam/internal/config"
 	"github.com/yikkrrtykj/srt-cam/internal/model"
+	"github.com/yikkrrtykj/srt-cam/internal/relaytee"
 )
 
-func TestHTTPSnapshotGrabber(t *testing.T) {
+func TestHTTPSnapshotGrabberAndOnDemandTouch(t *testing.T) {
 	fakeJPG := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")
@@ -23,14 +26,63 @@ func TestHTTPSnapshotGrabber(t *testing.T) {
 	mgr := NewManager([]config.PreviewTarget{
 		{ChannelID: "srt-cam5", InputURL: ts.URL, IntervalSec: 3},
 	})
-	mgr.captureOnce(context.Background(), mgr.targets[0])
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
 
-	snap, ok := mgr.Snapshot("srt-cam5", 10*time.Second)
-	if !ok {
-		t.Fatalf("expected cached HTTP snapshot")
+	// Touch wakes on-demand async capture immediately
+	mgr.Touch("srt-cam5")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if snap, ok := mgr.Snapshot("srt-cam5", 10*time.Second); ok {
+			if snap.ContentType != "image/jpeg" || len(snap.Data) != len(fakeJPG) {
+				t.Fatalf("unexpected snapshot ct=%q len=%d", snap.ContentType, len(snap.Data))
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	if snap.ContentType != "image/jpeg" || len(snap.Data) != len(fakeJPG) {
-		t.Fatalf("unexpected snapshot ct=%q len=%d", snap.ContentType, len(snap.Data))
+	t.Fatalf("timed out waiting for on-demand HTTP snapshot")
+}
+
+func TestSyncEventSheetAutoPreviewAndHealthzPreflight(t *testing.T) {
+	// Mock local srt-relayd preview tap reporting flowing=true on /healthz
+	tap := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"flowing":true,"packets":42}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer tap.Close()
+
+	mgr := NewManager(nil)
+	mgr.SyncEventSheet("vps-1", config.EventSheet{
+		SignalGroups: []config.SignalGroupConfig{
+			{
+				ID: "ob-pgm",
+				Legs: []config.LegConfig{
+					{NodeID: "vps-1", ChannelID: "srt-cam5", Mode: model.ModeSRTRelay, InPort: 21115},
+					{NodeID: "vps-1", ChannelID: "srt-pass1", Mode: model.ModeUDPPassthrough, InPort: 31111},
+				},
+			},
+		},
+	})
+
+	mgr.mu.RLock()
+	autoTarget, okRelay := mgr.targets["srt-cam5"]
+	_, okPass := mgr.targets["srt-pass1"]
+	mgr.mu.RUnlock()
+
+	if !okRelay || autoTarget.InputURL != "http://127.0.0.1:29115/ts" {
+		t.Fatalf("auto preview target = (%v, %+v), want http://127.0.0.1:29115/ts", okRelay, autoTarget)
+	}
+	if okPass {
+		t.Fatalf("Mode B passthrough must not auto-register /ts preview target")
+	}
+	if !mgr.isLocalTapFlowing(context.Background(), tap.URL+"/ts") {
+		t.Fatalf("expected /healthz preflight flowing=true")
 	}
 }
 
@@ -58,3 +110,91 @@ func TestRenderDemoMonitorSVGStates(t *testing.T) {
 		t.Fatalf("expected live PGM monitor SVG, got: %s", live[:120])
 	}
 }
+
+func TestEndToEndFFmpegKeyframeFromRelayTee(t *testing.T) {
+	ffPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed; skipping live MPEG-TS keyframe integration test")
+	}
+
+	// Sink UDP socket representing egress srt-live-transmit
+	egressAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	egressConn, err := net.ListenUDP("udp", egressAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer egressConn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+
+	// Drain egress packets in background
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, _, err := egressConn.ReadFromUDP(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	tee, err := relaytee.New(relaytee.Config{
+		ListenAddr:    "127.0.0.1:0",
+		EgressAddr:    egressConn.LocalAddr().String(),
+		HTTPAddr:      "127.0.0.1:0",
+		StreamTimeout: 8 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tee.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate a real live H.264 MPEG-TS stream with 2-second GOP (60 frames @ 30fps)
+	encCmd := exec.CommandContext(ctx, ffPath,
+		"-nostdin", "-loglevel", "error",
+		"-re", "-f", "lavfi", "-i", "smptebars=size=1280x720:rate=30",
+		"-pix_fmt", "yuv420p",
+		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+		"-b:v", "12000k", "-g", "60", "-keyint_min", "60",
+		"-f", "mpegts", "udp://"+tee.BoundUDPAddr()+"?pkt_size=1316",
+	)
+	if err := encCmd.Start(); err != nil {
+		t.Fatalf("start ffmpeg test encoder: %v", err)
+	}
+	defer func() { _ = encCmd.Process.Kill(); _ = encCmd.Wait() }()
+
+	// Join mid-GOP (~500ms after encoder starts) to verify real-world mid-stream keyframe grab
+	time.Sleep(500 * time.Millisecond)
+
+	mgr := NewManager([]config.PreviewTarget{
+		{
+			ChannelID:   "srt-cam5",
+			InputURL:    "http://" + tee.BoundHTTPAddr() + "/ts",
+			IntervalSec: 5,
+		},
+	})
+	mgr.Start(ctx)
+	mgr.Touch("srt-cam5")
+
+	deadline := time.Now().Add(9 * time.Second)
+	for time.Now().Before(deadline) {
+		if snap, ok := mgr.Snapshot("srt-cam5", 15*time.Second); ok {
+			if snap.ContentType != "image/jpeg" {
+				t.Fatalf("content-type = %q, want image/jpeg", snap.ContentType)
+			}
+			if len(snap.Data) < 1000 || snap.Data[0] != 0xFF || snap.Data[1] != 0xD8 {
+				t.Fatalf("invalid JPEG payload len=%d header=%x", len(snap.Data), snap.Data[:min(4, len(snap.Data))])
+			}
+			t.Logf("PASS: grabbed real 320x180 JPEG keyframe (%d bytes) from live mid-GOP H.264 MPEG-TS stream via relaytee", len(snap.Data))
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for real JPEG keyframe from live MPEG-TS stream")
+}
+

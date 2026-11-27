@@ -116,5 +116,18 @@ docker run --rm -p 8080:8080 -v "$PWD/deploy:/etc/srt-cam:ro" srt-camd:v2 \
   --demo --events /etc/srt-cam/event-sheet.example.json --listen 0.0.0.0:8080
 ```
 
+### Real Mode A Keyframe Thumbnails & Direct `IP:Port` Deployment
+
+- **Real 5-second Mode A Thumbnails (zero CPU when idle)**:
+  - `deploy/Dockerfile.relay` builds `srt-relayd` alongside Haivision `libsrt 1.5.4`. In `deploy/docker-compose.v2.yml`, Mode A containers (`srt-cam1..10`) expose a loopback-only on-demand MPEG-TS tap (`PREVIEW_HTTP_ADDR=127.0.0.1:29111..29120`).
+  - `deploy/Dockerfile.camd` bundles `ffmpeg`. When a browser is open, `srt-camd` automatically discovers `http://127.0.0.1:<in_port+8000>/ts`, checks `/healthz` for active video flow, and grabs 1 keyframe every 5s (max 2 concurrent `ffmpeg` jobs; 0% CPU when nobody is viewing). Encrypted Mode B passthrough channels display an `AES` badge without touching ciphertext.
+- **Quick `IP:Port` + Password Setup (no domain required)**:
+  ```bash
+  docker build -f deploy/Dockerfile.camd -t srt-camd:v2 .
+  bash scripts/init-v2-node.sh --node-id vps-1 --port 8080
+  ```
+  Start the Mode A relay stack with `docker compose -f deploy/docker-compose.v2.yml up -d` and launch `srt-camd` with `--network host` (command printed by `init-v2-node.sh`).
+
 See [`deploy/config.example.json`](deploy/config.example.json), [`deploy/event-sheet.example.json`](deploy/event-sheet.example.json), [`deploy/srt-camd.service`](deploy/srt-camd.service), and the step-by-step [`docs/makito-redundancy-guide.md`](docs/makito-redundancy-guide.md) for test VPS deployment and Makito X4 unplug-test acceptance.
+
 

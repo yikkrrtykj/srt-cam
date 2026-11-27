@@ -1,7 +1,9 @@
-# Mode A upgraded SRT relay image (Haivision libsrt 1.5.x with srt-live-transmit)
-# Multi-stage build keeps runtime image small while upgrading beyond Ubuntu 22.04's libsrt 1.4.4.
+# Mode A upgraded SRT relay image (Haivision libsrt 1.5.x + srt-relayd preview tap)
+# - Without PREVIEW_HTTP_ADDR, srt-relayd directly execs srt-live-transmit (zero overhead).
+# - With PREVIEW_HTTP_ADDR=127.0.0.1:2911x, serves an on-demand non-blocking HTTP /ts tap
+#   so srt-camd can grab 1 keyframe thumbnail every 5s when the dashboard is open (0% CPU when idle).
 
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:24.04 AS srt-builder
 
 ARG SRT_VERSION=v1.5.4
 
@@ -23,14 +25,22 @@ RUN git clone --depth 1 --branch "${SRT_VERSION}" https://github.com/Haivision/s
  && cmake --build srt/build -j"$(nproc)" \
  && cmake --install srt/build
 
+FROM golang:1.26-alpine AS relayd-builder
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY cmd/srt-relayd ./cmd/srt-relayd
+COPY internal/relaytee ./internal/relaytee
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/srt-relayd ./cmd/srt-relayd
+
 FROM ubuntu:24.04
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libssl3 ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/bin/srt-live-transmit /usr/local/bin/srt-live-transmit
-COPY --from=builder /usr/local/lib/libsrt.so* /usr/local/lib/
+COPY --from=srt-builder /usr/local/bin/srt-live-transmit /usr/local/bin/srt-live-transmit
+COPY --from=srt-builder /usr/local/lib/libsrt.so* /usr/local/lib/
+COPY --from=relayd-builder /out/srt-relayd /usr/local/bin/srt-relayd
 RUN ldconfig
 
-ENTRYPOINT ["srt-live-transmit"]
+ENTRYPOINT ["/usr/local/bin/srt-relayd"]
