@@ -20,13 +20,19 @@ import (
 	"github.com/yikkrrtykj/srt-cam/internal/model"
 )
 
-// VideoMeta holds lightweight stream format details parsed from ffmpeg's probe header during
+// VideoMeta holds lightweight audio/video format details parsed from ffmpeg's probe header during
 // keyframe thumbnail capture (zero extra decoding or network bandwidth).
 type VideoMeta struct {
-	FPS        float64
-	Resolution string
-	Codec      string
-	UpdatedAt  time.Time
+	FPS              float64
+	Resolution       string
+	Codec            string
+	AudioCodec       string
+	AudioSampleRate  int
+	AudioBitrateKbps int
+	AudioChannels    string
+	AudioTracks      int
+	AudioDetail      string
+	UpdatedAt        time.Time
 }
 
 // Snapshot holds one captured thumbnail image in memory.
@@ -170,7 +176,7 @@ func (m *Manager) Snapshot(channelID string, maxAge time.Duration) (Snapshot, bo
 	return snap, true
 }
 
-// VideoMeta returns the most recent parsed stream format metadata (FPS, resolution, codec)
+// VideoMeta returns the most recent parsed stream format metadata (video + audio)
 // captured alongside keyframe thumbnails within maxAge.
 func (m *Manager) VideoMeta(channelID string, maxAge time.Duration) (VideoMeta, bool) {
 	if maxAge <= 0 {
@@ -179,7 +185,7 @@ func (m *Manager) VideoMeta(channelID string, maxAge time.Duration) (VideoMeta, 
 	m.mu.RLock()
 	meta, ok := m.metaCache[channelID]
 	m.mu.RUnlock()
-	if !ok || (meta.FPS <= 0 && meta.Resolution == "") || time.Since(meta.UpdatedAt) > maxAge {
+	if !ok || (meta.FPS <= 0 && meta.Resolution == "" && meta.AudioSampleRate == 0) || time.Since(meta.UpdatedAt) > maxAge {
 		return VideoMeta{}, false
 	}
 	return meta, true
@@ -256,7 +262,7 @@ func (m *Manager) captureOnce(ctx context.Context, t config.PreviewTarget) {
 		ContentType: ct,
 		UpdatedAt:   now,
 	}
-	if meta.FPS > 0 || meta.Resolution != "" || meta.Codec != "" {
+	if meta.FPS > 0 || meta.Resolution != "" || meta.Codec != "" || meta.AudioSampleRate > 0 {
 		meta.UpdatedAt = now
 		m.metaCache[t.ChannelID] = meta
 	}
@@ -386,48 +392,156 @@ func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string, force
 }
 
 var (
-	reVideoCodec = regexp.MustCompile(`(?i)Stream\s+#\d+:\d+[^:]*:\s*Video:\s*([a-z0-9_]+)`)
-	reVideoRes   = regexp.MustCompile(`\b(\d{3,4}x\d{3,4})\b`)
-	reVideoFPS   = regexp.MustCompile(`\b(\d+(?:\.\d+)?)\s+fps\b`)
-	reVideoTBR   = regexp.MustCompile(`\b(\d+(?:\.\d+)?)\s+tbr\b`)
+	reVideoCodec  = regexp.MustCompile(`(?i)Stream\s+#\d+:\d+[^:]*:\s*Video:\s*([a-z0-9_]+)`)
+	reVideoRes    = regexp.MustCompile(`\b(\d{3,4}x\d{3,4})\b`)
+	reVideoFPS    = regexp.MustCompile(`\b(\d+(?:\.\d+)?)\s+fps\b`)
+	reVideoTBR    = regexp.MustCompile(`\b(\d+(?:\.\d+)?)\s+tbr\b`)
+	reAudioCodec  = regexp.MustCompile(`(?i)Stream\s+#\d+:\d+[^:]*:\s*Audio:\s*([a-z0-9_]+)`)
+	reAudioRate   = regexp.MustCompile(`\b(\d{4,6})\s+Hz\b`)
+	reAudioKbps   = regexp.MustCompile(`\b(\d+)\s+kb/s\b`)
+	reAudioLayout = regexp.MustCompile(`\b(mono|stereo|quad|hexagonal|octagonal|\d+\.\d+(?:\([a-z]+\))?|\d+\s+channels)\b`)
 )
 
-// ParseFFmpegVideoMeta extracts codec, resolution, and frame rate from ffmpeg's Input #0 stderr line.
+func normalizeAudioCodec(raw string) string {
+	low := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case low == "aac":
+		return "AAC"
+	case low == "aac_latm":
+		return "AAC-LATM"
+	case low == "mp2":
+		return "MP2"
+	case low == "mp3":
+		return "MP3"
+	case low == "ac3":
+		return "AC-3"
+	case low == "eac3":
+		return "E-AC-3"
+	case low == "opus":
+		return "Opus"
+	case low == "s302m":
+		return "PCM (S302M)"
+	case strings.HasPrefix(low, "pcm_"):
+		return "PCM"
+	default:
+		return strings.ToUpper(low)
+	}
+}
+
+func formatSampleRateShort(hz int) string {
+	if hz <= 0 {
+		return "-"
+	}
+	if hz%1000 == 0 {
+		return fmt.Sprintf("%d kHz", hz/1000)
+	}
+	return fmt.Sprintf("%.1f kHz", float64(hz)/1000.0)
+}
+
+// ParseFFmpegVideoMeta extracts video (codec, resolution, fps) and all audio tracks
+// (codec, sample rate, bitrate, channel layout, track count) from ffmpeg's Input #0 stderr lines.
 func ParseFFmpegVideoMeta(stderr string) VideoMeta {
+	var meta VideoMeta
+	var audioLines []string
+	hasVideo := false
+
 	for _, line := range strings.Split(stderr, "\n") {
-		if !strings.Contains(line, "Video:") || !strings.Contains(line, "Stream #0:") {
+		trimmed := strings.TrimSpace(line)
+		// Stop once ffmpeg moves past Input #0 stream descriptions into Output #0 / mapping.
+		if strings.HasPrefix(trimmed, "Output #") || strings.HasPrefix(trimmed, "Stream mapping:") {
+			break
+		}
+		if !strings.Contains(line, "Stream #0:") {
 			continue
 		}
-		var meta VideoMeta
-		if m := reVideoCodec.FindStringSubmatch(line); len(m) > 1 {
-			switch strings.ToLower(m[1]) {
-			case "h264":
-				meta.Codec = "H.264"
-			case "hevc", "h265":
-				meta.Codec = "HEVC"
-			case "mpeg2video":
-				meta.Codec = "MPEG-2"
-			default:
-				meta.Codec = strings.ToUpper(m[1])
+
+		if !hasVideo && strings.Contains(line, "Video:") {
+			hasVideo = true
+			if m := reVideoCodec.FindStringSubmatch(line); len(m) > 1 {
+				switch strings.ToLower(m[1]) {
+				case "h264":
+					meta.Codec = "H.264"
+				case "hevc", "h265":
+					meta.Codec = "HEVC"
+				case "mpeg2video":
+					meta.Codec = "MPEG-2"
+				default:
+					meta.Codec = strings.ToUpper(m[1])
+				}
+			}
+			if m := reVideoRes.FindStringSubmatch(line); len(m) > 1 {
+				meta.Resolution = m[1]
+			}
+			fpsStr := ""
+			if m := reVideoFPS.FindStringSubmatch(line); len(m) > 1 {
+				fpsStr = m[1]
+			} else if m := reVideoTBR.FindStringSubmatch(line); len(m) > 1 {
+				fpsStr = m[1]
+			}
+			if fpsStr != "" {
+				if v, err := strconv.ParseFloat(fpsStr, 64); err == nil && v >= 1 && v <= 240 {
+					meta.FPS = v
+				}
+			}
+			continue
+		}
+
+		if strings.Contains(line, "Audio:") {
+			meta.AudioTracks++
+			codec := ""
+			if m := reAudioCodec.FindStringSubmatch(line); len(m) > 1 {
+				codec = normalizeAudioCodec(m[1])
+			}
+			rate := 0
+			if m := reAudioRate.FindStringSubmatch(line); len(m) > 1 {
+				if v, err := strconv.Atoi(m[1]); err == nil && v >= 8000 && v <= 384000 {
+					rate = v
+				}
+			}
+			kbps := 0
+			if m := reAudioKbps.FindStringSubmatch(line); len(m) > 1 {
+				if v, err := strconv.Atoi(m[1]); err == nil && v > 0 && v <= 10000 {
+					kbps = v
+				}
+			}
+			channels := ""
+			if m := reAudioLayout.FindStringSubmatch(line); len(m) > 1 {
+				channels = m[1]
+				if idx := strings.IndexByte(channels, '('); idx > 0 {
+					channels = channels[:idx]
+				}
+			}
+
+			if meta.AudioTracks == 1 {
+				meta.AudioCodec = codec
+				meta.AudioSampleRate = rate
+				meta.AudioBitrateKbps = kbps
+				meta.AudioChannels = channels
+			}
+
+			var parts []string
+			if codec != "" {
+				parts = append(parts, codec)
+			}
+			if rate > 0 {
+				parts = append(parts, formatSampleRateShort(rate))
+			}
+			if channels != "" {
+				parts = append(parts, channels)
+			}
+			if kbps > 0 {
+				parts = append(parts, fmt.Sprintf("%d kb/s", kbps))
+			}
+			if len(parts) > 0 {
+				audioLines = append(audioLines, fmt.Sprintf("音轨 #%d: %s", meta.AudioTracks, strings.Join(parts, " · ")))
 			}
 		}
-		if m := reVideoRes.FindStringSubmatch(line); len(m) > 1 {
-			meta.Resolution = m[1]
-		}
-		fpsStr := ""
-		if m := reVideoFPS.FindStringSubmatch(line); len(m) > 1 {
-			fpsStr = m[1]
-		} else if m := reVideoTBR.FindStringSubmatch(line); len(m) > 1 {
-			fpsStr = m[1]
-		}
-		if fpsStr != "" {
-			if v, err := strconv.ParseFloat(fpsStr, 64); err == nil && v >= 1 && v <= 240 {
-				meta.FPS = v
-			}
-		}
-		return meta
 	}
-	return VideoMeta{}
+
+	if len(audioLines) > 0 {
+		meta.AudioDetail = strings.Join(audioLines, "\n")
+	}
+	return meta
 }
 
 // RenderDemoMonitorSVG renders a clean 16:9 broadcast monitor thumbnail for --demo mode

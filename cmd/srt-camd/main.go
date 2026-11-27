@@ -223,6 +223,12 @@ func runCycle(
 					sample.VideoFPS = meta.FPS
 					sample.VideoResolution = meta.Resolution
 					sample.VideoCodec = meta.Codec
+					sample.AudioCodec = meta.AudioCodec
+					sample.AudioSampleRate = meta.AudioSampleRate
+					sample.AudioBitrateKbps = meta.AudioBitrateKbps
+					sample.AudioChannels = meta.AudioChannels
+					sample.AudioTracks = meta.AudioTracks
+					sample.AudioDetail = meta.AudioDetail
 					localStatus.Channels[cid] = sample
 				}
 			}
