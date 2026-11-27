@@ -237,9 +237,9 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
       setDirty(false);
       setStopConfirm(null);
       if (enable) {
-        toast.success(`已启动「${signalName}」，传输参数已锁定（名称与备注仍可修改）`);
+        toast.success(`已启动「${signalName}」`);
       } else {
-        toast.success(`已停止「${signalName}」，传输参数已解锁，现在可修改通道或端口`);
+        toast.success(`已停止「${signalName}」`);
       }
       onSaved();
     } catch (err) {
