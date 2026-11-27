@@ -346,48 +346,60 @@ export function AlertsPage({ overview, onRefreshOverview }: Props) {
           </div>
 
           <div className="p-4 space-y-3.5">
+            <div className="rounded-md border border-[#1E222B] bg-[#0D0F12] px-3 py-2.5 text-[11.5px] text-[#98A1B0] space-y-1">
+              <div>
+                <span className="inline-block h-2 w-2 rounded-full bg-[#EF4444] mr-1.5 align-middle" />
+                <strong className="text-[#F1F3F6]">红灯（中断）</strong>：码率掉到“最低码率”以下，或通道停止运行。
+              </div>
+              <div>
+                <span className="inline-block h-2 w-2 rounded-full bg-[#F59E0B] mr-1.5 align-middle" />
+                <strong className="text-[#F1F3F6]">黄灯（波动）</strong>：出现任意<strong className="text-[#E6E9EF]">未恢复弃包（真丢画面）</strong>、4×时延超过设定缓冲，或超过下方任意预警线。
+              </div>
+              <div>
+                <span className="inline-block h-2 w-2 rounded-full bg-[#22C55E] mr-1.5 align-middle" />
+                <strong className="text-[#F1F3F6]">绿灯（正常）</strong>：推流与拉流码率正常、0 弃包，且各项指标均在安全范围内。
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <ThresholdField
-                label="最低有效码率 (Mb/s)"
-                hint="低于此值判定为无流 / 中断"
+                label="断流判定码率 (Mb/s)"
+                hint="低于此码率即判定为断流（红灯）"
                 value={minFlowMbps}
                 step="0.05"
                 onChange={setMinFlowMbps}
               />
               <ThresholdField
-                label="高往返时延阈值 (ms)"
-                hint="RTT 超过此值判定为链路波动"
+                label="高延迟预警线 (ms)"
+                hint="往返时延 RTT 超过此值报波动（黄灯）"
                 value={highRttMs}
                 step="10"
                 onChange={setHighRttMs}
               />
               <ThresholdField
-                label="单周期网络丢包 (包)"
-                hint="2 秒周期内丢包触发波动提示"
+                label="2 秒内丢包预警线 (包)"
+                hint="轻微丢包可被 SRT 自动救回，调大可减少误报"
                 value={highLoss}
                 onChange={setHighLoss}
               />
               <ThresholdField
-                label="单周期重传包数 (包)"
-                hint="高频 ARQ 重传提示线路不稳定"
+                label="2 秒内重传预警线 (包)"
+                hint="重传超此数提示线路变差（若出现弃包必立刻告警）"
                 value={highRetrans}
                 onChange={setHighRetrans}
               />
               <ThresholdField
-                label="透传模式 NAK 请求 (包)"
-                hint="加密透传下解码端请求重发阈值"
+                label="透传模式重发请求线 (包)"
+                hint="仅加密透传生效：解码端 2 秒内请求重发上限"
                 value={highNak}
                 onChange={setHighNak}
               />
               <ThresholdField
-                label="服务器 UDP 缓冲丢包 (包)"
-                hint="服务器网卡/内核收包溢出判定阈值"
+                label="服务器过载丢包线 (包)"
+                hint="中转服务器自身收包溢出上限，正常应为 0"
                 value={udpDropTrigger}
                 onChange={setUdpDropTrigger}
               />
-            </div>
-            <div className="rounded-md border border-[#1E222B] bg-[#0D0F12] px-3 py-2 text-[11.5px] text-[#7C8596]">
-              说明：出现任意<strong className="text-[#D3D8E0]">未恢复弃包（Drop &gt; 0）</strong>或<strong className="text-[#D3D8E0]"> 4×RTT 超过设定缓冲</strong>时，无论上述丢包/重传阈值如何设置均会立即告警。
             </div>
           </div>
         </section>

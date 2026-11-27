@@ -254,8 +254,8 @@ func DefaultEventSheet(nodeID string) EventSheet {
 					NodeID:    nodeID,
 					ChannelID: fmt.Sprintf("srt-cam%d", i),
 					Mode:      model.ModeSRTRelay,
-					InPort:    21110 + i,
-					OutPort:   11110 + i,
+					InPort:    20000 + i,
+					OutPort:   21000 + i,
 				},
 			},
 		})

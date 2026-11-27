@@ -1,6 +1,6 @@
 # SRT-CAM v2 Production Reference Compose
 # - Data plane channels remain strictly isolated (1 container = 1 channel = 1 blast radius).
-# - Native JSON stats enabled by default (-stats:1500 -statspf:json) with bounded log rotation.
+# - Native JSON stats enabled by default (-stats:250 -statspf:json) with bounded log rotation.
 # - Control plane (srt-camd) runs separately via systemd or its own container; restarting it never drops media.
 
 x-srt-relay-base: &srt-relay-base
@@ -31,82 +31,82 @@ x-srt-pass-base: &srt-pass-base
 
 services:
   # =========================================================================
-  # Mode A: Dual-Caller SRT Relay (2111x ingest -> 1111x egress)
+  # Mode A: Dual-Caller SRT Relay (20001-20010 ingest -> 21001-21010 egress)
   # Suitable for vMix, rapid setup without receiver port-forwarding, and
   # dual-hardware redundancy (Encoder#1/2 -> VPS#1/2 -> Decoder#1/2).
-  # PREVIEW_HTTP_ADDR exposes a loopback-only on-demand /ts tap for 5s
-  # keyframe thumbnails (0% overhead when nobody has the dashboard open).
+  # PREVIEW_HTTP_ADDR exposes a loopback-only on-demand /ts tap (inPort+8000)
+  # for 5s keyframe thumbnails (0% overhead when nobody has the dashboard open).
   # Remove PREVIEW_HTTP_ADDR on any channel to exec raw srt-live-transmit.
   # =========================================================================
   srt-cam1:
     <<: *srt-relay-base
     container_name: srt-cam1
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29111
-    command: ["-stats:250", "-statspf:json", "srt://:21111?rcvbuf=33554432", "srt://:11111?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28001
+    command: ["-stats:250", "-statspf:json", "srt://:20001?rcvbuf=33554432", "srt://:21001?rcvbuf=33554432"]
 
   srt-cam2:
     <<: *srt-relay-base
     container_name: srt-cam2
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29112
-    command: ["-stats:250", "-statspf:json", "srt://:21112?rcvbuf=33554432", "srt://:11112?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28002
+    command: ["-stats:250", "-statspf:json", "srt://:20002?rcvbuf=33554432", "srt://:21002?rcvbuf=33554432"]
 
   srt-cam3:
     <<: *srt-relay-base
     container_name: srt-cam3
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29113
-    command: ["-stats:250", "-statspf:json", "srt://:21113?rcvbuf=33554432", "srt://:11113?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28003
+    command: ["-stats:250", "-statspf:json", "srt://:20003?rcvbuf=33554432", "srt://:21003?rcvbuf=33554432"]
 
   srt-cam4:
     <<: *srt-relay-base
     container_name: srt-cam4
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29114
-    command: ["-stats:250", "-statspf:json", "srt://:21114?rcvbuf=33554432", "srt://:11114?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28004
+    command: ["-stats:250", "-statspf:json", "srt://:20004?rcvbuf=33554432", "srt://:21004?rcvbuf=33554432"]
 
   srt-cam5:
     <<: *srt-relay-base
     container_name: srt-cam5
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29115
-    command: ["-stats:250", "-statspf:json", "srt://:21115?rcvbuf=33554432", "srt://:11115?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28005
+    command: ["-stats:250", "-statspf:json", "srt://:20005?rcvbuf=33554432", "srt://:21005?rcvbuf=33554432"]
 
   srt-cam6:
     <<: *srt-relay-base
     container_name: srt-cam6
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29116
-    command: ["-stats:250", "-statspf:json", "srt://:21116?rcvbuf=33554432", "srt://:11116?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28006
+    command: ["-stats:250", "-statspf:json", "srt://:20006?rcvbuf=33554432", "srt://:21006?rcvbuf=33554432"]
 
   srt-cam7:
     <<: *srt-relay-base
     container_name: srt-cam7
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29117
-    command: ["-stats:250", "-statspf:json", "srt://:21117?rcvbuf=33554432", "srt://:11117?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28007
+    command: ["-stats:250", "-statspf:json", "srt://:20007?rcvbuf=33554432", "srt://:21007?rcvbuf=33554432"]
 
   srt-cam8:
     <<: *srt-relay-base
     container_name: srt-cam8
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29118
-    command: ["-stats:250", "-statspf:json", "srt://:21118?rcvbuf=33554432", "srt://:11118?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28008
+    command: ["-stats:250", "-statspf:json", "srt://:20008?rcvbuf=33554432", "srt://:21008?rcvbuf=33554432"]
 
   srt-cam9:
     <<: *srt-relay-base
     container_name: srt-cam9
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29119
-    command: ["-stats:250", "-statspf:json", "srt://:21119?rcvbuf=33554432", "srt://:11119?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28009
+    command: ["-stats:250", "-statspf:json", "srt://:20009?rcvbuf=33554432", "srt://:21009?rcvbuf=33554432"]
 
   srt-cam10:
     <<: *srt-relay-base
     container_name: srt-cam10
     environment:
-      - PREVIEW_HTTP_ADDR=127.0.0.1:29120
-    command: ["-stats:250", "-statspf:json", "srt://:21120?rcvbuf=33554432", "srt://:11120?rcvbuf=33554432"]
+      - PREVIEW_HTTP_ADDR=127.0.0.1:28010
+    command: ["-stats:250", "-statspf:json", "srt://:20010?rcvbuf=33554432", "srt://:21010?rcvbuf=33554432"]
 
   # =========================================================================
   # Mode B (Optional): Pure L4 UDP Passthrough for Makito X4 Path Redundancy

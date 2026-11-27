@@ -88,7 +88,7 @@ func (m *Manager) SyncEventSheet(localNodeID string, sheet config.EventSheet) {
 			if _, ok := next[leg.ChannelID]; ok {
 				continue
 			}
-			if leg.InPort >= 21111 && leg.InPort <= 21200 {
+			if (leg.InPort >= 20001 && leg.InPort <= 20100) || (leg.InPort >= 21111 && leg.InPort <= 21200) {
 				next[leg.ChannelID] = config.PreviewTarget{
 					ChannelID:   leg.ChannelID,
 					InputURL:    fmt.Sprintf("http://127.0.0.1:%d/ts", leg.InPort+8000),

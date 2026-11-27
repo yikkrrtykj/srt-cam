@@ -26,10 +26,10 @@ const RELAY_PRESETS = Array.from({ length: 10 }, (_, idx) => {
   const n = idx + 1;
   return {
     channel_id: `srt-cam${n}`,
-    label: `通道 ${n} (推 ${21110 + n} → 拉 ${11110 + n})`,
+    label: `通道 ${n} (推 ${20000 + n} → 拉 ${21000 + n})`,
     mode: "srt-relay" as const,
-    in_port: 21110 + n,
-    out_port: 11110 + n,
+    in_port: 20000 + n,
+    out_port: 21000 + n,
   };
 });
 
@@ -194,8 +194,8 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
     // if only 1 VPS exists, pick an unused channel on that same VPS so ports never collide.
     let backupChannelId = first?.channel_id || "srt-cam1";
     let backupMode = first?.mode || ("srt-relay" as const);
-    let backupInPort = first?.in_port || 21111;
-    let backupOutPort = first?.out_port || 11111;
+    let backupInPort = first?.in_port || 20001;
+    let backupOutPort = first?.out_port || 21001;
 
     if (backupNode === first?.node_id) {
       const usedOnSameNode = new Set(

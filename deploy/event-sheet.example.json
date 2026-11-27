@@ -54,8 +54,8 @@
           "carrier": "电信",
           "src_device": "现场Encoder#1 Out2",
           "dst_device": "上海Decoder#1 In2",
-          "in_port": 21112,
-          "out_port": 11112
+          "in_port": 20002,
+          "out_port": 21002
         }
       ]
     },
@@ -74,8 +74,8 @@
           "carrier": "联通",
           "src_device": "现场Encoder#1 Out3",
           "dst_device": "上海Decoder#1 In3",
-          "in_port": 21113,
-          "out_port": 11113
+          "in_port": 20003,
+          "out_port": 21003
         }
       ]
     },
@@ -95,8 +95,8 @@
           "carrier": "电信",
           "src_device": "现场Encoder#2(主) 板卡1-Out1",
           "dst_device": "上海Decoder#2(主) In1",
-          "in_port": 21111,
-          "out_port": 11111
+          "in_port": 20001,
+          "out_port": 21001
         },
         {
           "role": "backup",
@@ -106,8 +106,8 @@
           "carrier": "联通",
           "src_device": "现场Encoder#3(备) 板卡1-Out2",
           "dst_device": "上海Decoder#3(备) In1",
-          "in_port": 21111,
-          "out_port": 11111
+          "in_port": 20001,
+          "out_port": 21001
         }
       ]
     },
@@ -127,8 +127,8 @@
           "carrier": "电信",
           "src_device": "上海Encoder#1(主) D#1 Out1",
           "dst_device": "现场Decoder#1(主) MT#1 In9",
-          "in_port": 21115,
-          "out_port": 11115
+          "in_port": 20005,
+          "out_port": 21005
         },
         {
           "role": "backup",
@@ -138,8 +138,8 @@
           "carrier": "备用公网",
           "src_device": "上海Encoder#2(备) D#2 Out1",
           "dst_device": "现场Decoder#2(备) MT#2 In9",
-          "in_port": 21115,
-          "out_port": 11115
+          "in_port": 20005,
+          "out_port": 21005
         }
       ]
     },
@@ -158,8 +158,8 @@
           "carrier": "电信",
           "src_device": "上海Encoder#1(主) D#1 Out2",
           "dst_device": "现场Decoder#1(主) MT#1 In10",
-          "in_port": 21116,
-          "out_port": 11116
+          "in_port": 20006,
+          "out_port": 21006
         },
         {
           "role": "backup",
@@ -169,8 +169,8 @@
           "carrier": "备用公网",
           "src_device": "上海Encoder#2(备) D#2 Out2",
           "dst_device": "现场Decoder#2(备) MT#2 In10",
-          "in_port": 21116,
-          "out_port": 11116
+          "in_port": 20006,
+          "out_port": 21006
         }
       ]
     },
@@ -189,8 +189,8 @@
           "carrier": "电信",
           "src_device": "上海Encoder#1(主) D#1 Out3",
           "dst_device": "现场Decoder#1(主) MT#1 In11",
-          "in_port": 21117,
-          "out_port": 11117
+          "in_port": 20007,
+          "out_port": 21007
         },
         {
           "role": "backup",
@@ -200,8 +200,8 @@
           "carrier": "备用公网",
           "src_device": "上海Encoder#2(备) D#2 Out3",
           "dst_device": "现场Decoder#2(备) MT#2 In11",
-          "in_port": 21117,
-          "out_port": 11117
+          "in_port": 20007,
+          "out_port": 21007
         }
       ]
     },
@@ -221,8 +221,8 @@
           "carrier": "公网",
           "src_device": "现场 vMix Output",
           "dst_device": "上海 vMix Input",
-          "in_port": 21120,
-          "out_port": 11120
+          "in_port": 20010,
+          "out_port": 21010
         }
       ]
     }

@@ -182,8 +182,8 @@ func (c *Collector) CollectOnce(ctx context.Context, sheet config.EventSheet) (m
 	for i := 1; i <= 10; i++ {
 		cid := fmt.Sprintf("srt-cam%d", i)
 		if _, exists := localLegs[cid]; !exists {
-			portsToCheck[21110+i] = true
-			portsToCheck[11110+i] = true
+			portsToCheck[20000+i] = true
+			portsToCheck[21000+i] = true
 			localLegs[cid] = localLeg{
 				grp: config.SignalGroupConfig{ID: cid, Name: fmt.Sprintf("CAM%d", i), ExpectedActive: false},
 				leg: config.LegConfig{
@@ -191,8 +191,8 @@ func (c *Collector) CollectOnce(ctx context.Context, sheet config.EventSheet) (m
 					NodeID:    c.cfg.NodeID,
 					ChannelID: cid,
 					Mode:      model.ModeSRTRelay,
-					InPort:    21110 + i,
-					OutPort:   11110 + i,
+					InPort:    20000 + i,
+					OutPort:   21000 + i,
 				},
 			}
 		}

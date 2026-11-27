@@ -63,6 +63,7 @@ func TestSyncEventSheetAutoPreviewAndHealthzPreflight(t *testing.T) {
 			{
 				ID: "ob-pgm",
 				Legs: []config.LegConfig{
+					{NodeID: "vps-1", ChannelID: "srt-cam1", Mode: model.ModeSRTRelay, InPort: 20001},
 					{NodeID: "vps-1", ChannelID: "srt-cam5", Mode: model.ModeSRTRelay, InPort: 21115},
 					{NodeID: "vps-1", ChannelID: "srt-pass1", Mode: model.ModeUDPPassthrough, InPort: 31111},
 				},
@@ -71,12 +72,16 @@ func TestSyncEventSheetAutoPreviewAndHealthzPreflight(t *testing.T) {
 	})
 
 	mgr.mu.RLock()
+	newTarget, okNew := mgr.targets["srt-cam1"]
 	autoTarget, okRelay := mgr.targets["srt-cam5"]
 	_, okPass := mgr.targets["srt-pass1"]
 	mgr.mu.RUnlock()
 
+	if !okNew || newTarget.InputURL != "http://127.0.0.1:28001/ts" {
+		t.Fatalf("new v2 preview target = (%v, %+v), want http://127.0.0.1:28001/ts", okNew, newTarget)
+	}
 	if !okRelay || autoTarget.InputURL != "http://127.0.0.1:29115/ts" {
-		t.Fatalf("auto preview target = (%v, %+v), want http://127.0.0.1:29115/ts", okRelay, autoTarget)
+		t.Fatalf("legacy preview target = (%v, %+v), want http://127.0.0.1:29115/ts", okRelay, autoTarget)
 	}
 	if okPass {
 		t.Fatalf("Mode B passthrough must not auto-register /ts preview target")
