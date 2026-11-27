@@ -68,6 +68,31 @@
   font-variant-numeric: tabular-nums;
 }
 
+@media (min-width: 768px) {
+  .tv-wall-stage {
+    container-type: size;
+  }
+
+  .tv-wall-grid {
+    display: grid;
+    width: 100%;
+    height: 100%;
+    gap: var(--wall-gap, 10px);
+    align-content: center;
+    grid-template-columns: repeat(var(--wall-cols, 2), minmax(0, 1fr));
+    grid-template-rows: repeat(
+      var(--wall-rows, 2),
+      min(
+        calc((100cqh - (var(--wall-rows, 2) - 1) * var(--wall-gap, 10px)) / var(--wall-rows, 2)),
+        calc(
+          ((100cqw - (var(--wall-cols, 2) - 1) * var(--wall-gap, 10px)) / var(--wall-cols, 2)) *
+            0.5625 + var(--wall-umd, 78px)
+        )
+      )
+    );
+  }
+}
+
 @media print {
   .no-print {
     display: none !important;
