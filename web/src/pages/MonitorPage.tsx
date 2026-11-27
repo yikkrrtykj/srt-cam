@@ -18,6 +18,7 @@ import type { LegLiveView, OverviewResponse, SignalGroupLiveView } from "@/types
 import {
   api,
   channelLossSummary,
+  formatAudioSummary,
   formatVideoFps,
   groupStatusMeta,
   legTone,
@@ -340,6 +341,7 @@ export function MonitorPage({
       : undefined;
   const activeStatus = activeGroup ? groupStatusMeta(activeGroup) : null;
   const activeFps = formatVideoFps(activeLeg);
+  const activeAudio = formatAudioSummary(activeLeg);
   const activeLoss = channelLossSummary(activeLeg);
   const isPass = activeLeg?.mode === "udp-passthrough";
   const hostAddr = activeLeg ? resolveNodeHost(overview.nodes, activeLeg.node_id) : "";
@@ -643,8 +645,8 @@ export function MonitorPage({
                         </div>
                       </div>
 
-                      {/* 5 Clean Hardware KPI Readouts */}
-                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                      {/* 6 Clean Hardware KPI Readouts */}
+                      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
                         <KpiCell
                           label="入站码率"
                           value={activeLeg.sample.src_mbps.toFixed(1)}
@@ -659,6 +661,12 @@ export function MonitorPage({
                           label="视频帧率"
                           value={activeFps.text}
                           title={activeFps.tooltip}
+                        />
+                        <KpiCell
+                          label="音频"
+                          value={activeAudio.text}
+                          tone={activeAudio.tone === "warn" ? "warn" : "neutral"}
+                          title={activeAudio.tooltip}
                         />
                         <KpiCell
                           label="丢包率"
@@ -821,6 +829,7 @@ export function MonitorPage({
                 const s = leg?.sample;
                 const flowing = g.enabled && !!leg?.node_online && (s?.src_mbps ?? 0) >= 0.1;
                 const fps = formatVideoFps(leg);
+                const audio = formatAudioSummary(leg);
                 const loss = channelLossSummary(leg);
                 const rttText =
                   flowing && leg && leg.mode !== "udp-passthrough" && s && s.src_rtt_ms > 0
@@ -917,8 +926,8 @@ export function MonitorPage({
                       </div>
                     </div>
 
-                    {/* Row 2: OBS-Style Crisp 4-Column Telemetry Strip (码率 / 帧率 / 丢包率 / 时延) */}
-                    <div className="grid grid-cols-4 divide-x divide-[#1C2029] border-t border-[#1A1E26] bg-[#0D0F13]">
+                    {/* Row 2: OBS-Style Crisp 5-Column Telemetry Strip (码率 / 帧率 / 音频 / 丢包率 / 时延) */}
+                    <div className="grid grid-cols-5 divide-x divide-[#1C2029] border-t border-[#1A1E26] bg-[#0D0F13]">
                       <WallMetricCell
                         label="码率"
                         value={s ? `${s.src_mbps.toFixed(1)} Mb/s` : "-"}
@@ -933,6 +942,18 @@ export function MonitorPage({
                             : "idle"
                         }
                         tooltip={fps.tooltip}
+                      />
+                      <WallMetricCell
+                        label="音频"
+                        value={audio.text}
+                        tone={
+                          audio.tone === "warn"
+                            ? "warn"
+                            : audio.tone === "ok"
+                            ? "active"
+                            : "idle"
+                        }
+                        tooltip={audio.tooltip}
                       />
                       <WallMetricCell
                         label="丢包率"
@@ -1018,9 +1039,9 @@ function WallMetricCell({
       : "text-[#636C7C]";
 
   const content = (
-    <div className="px-2.5 py-1.5 min-w-0">
+    <div className="px-2 py-1.5 min-w-0">
       <div className="text-[10px] leading-none text-[#687182]">{label}</div>
-      <div className={cn("tabular mt-1 truncate text-[11.5px] leading-tight", valCls)}>
+      <div className={cn("tabular mt-1 truncate text-[11px] leading-tight", valCls)}>
         {value}
       </div>
     </div>
@@ -1030,7 +1051,7 @@ function WallMetricCell({
   return (
     <Tooltip>
       <TooltipTrigger asChild>{content}</TooltipTrigger>
-      <TooltipContent className="max-w-[300px]">{tooltip}</TooltipContent>
+      <TooltipContent className="max-w-[320px] whitespace-pre-line">{tooltip}</TooltipContent>
     </Tooltip>
   );
 }

@@ -125,39 +125,59 @@ func TestRenderDemoMonitorSVGStates(t *testing.T) {
 
 func TestParseFFmpegVideoMeta(t *testing.T) {
 	cases := []struct {
-		name  string
-		input string
-		fps   float64
-		res   string
-		codec string
+		name       string
+		input      string
+		fps        float64
+		res        string
+		codec      string
+		audioCodec string
+		audioRate  int
+		audioKbps  int
+		audioCh    string
+		tracks     int
 	}{
 		{
-			name:  "1080p59.94 h264",
-			input: "Input #0, mpegts, from 'http://127.0.0.1:28001/ts':\n  Stream #0:0[0x100]: Video: h264 (High) ([27][0][0][0] / 0x001B), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 59.94 fps, 59.94 tbr, 90k tbn\n",
-			fps:   59.94,
-			res:   "1920x1080",
-			codec: "H.264",
+			name: "1080p59.94 h264 + aac 48k 179k stereo",
+			input: "Input #0, mpegts, from 'http://127.0.0.1:28001/ts':\n" +
+				"  Stream #0:0[0x100]: Video: h264 (High) ([27][0][0][0] / 0x001B), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 59.94 fps, 59.94 tbr, 90k tbn\n" +
+				"  Stream #0:1[0x101]: Audio: aac (LC) ([15][0][0][0] / 0x000F), 48000 Hz, stereo, fltp, 179 kb/s\n" +
+				"Output #0, image2pipe, to 'pipe:1':\n" +
+				"  Stream #0:0: Video: mjpeg, yuvj420p, 320x180, q=2-31, 200 kb/s, 59.94 fps\n",
+			fps: 59.94, res: "1920x1080", codec: "H.264",
+			audioCodec: "AAC", audioRate: 48000, audioKbps: 179, audioCh: "stereo", tracks: 1,
 		},
 		{
-			name:  "4k50 hevc tbr fallback",
-			input: "  Stream #0:1[0x101]: Video: hevc (Main 10), yuv420p10le, 3840x2160, 50 tbr, 90k tbn\n",
-			fps:   50,
-			res:   "3840x2160",
-			codec: "HEVC",
+			name: "multi-track aac + mp2",
+			input: "Input #0, mpegts, from 'pipe:0':\n" +
+				"  Stream #0:0[0x100]: Video: hevc (Main 10), yuv420p10le, 3840x2160, 50 tbr, 90k tbn\n" +
+				"  Stream #0:1[0x101]: Audio: ac3 (AC-3 / 0x332D4341), 48000 Hz, 5.1(side), fltp, 384 kb/s\n" +
+				"  Stream #0:2[0x102]: Audio: mp2 ([3][0][0][0] / 0x0003), 48000 Hz, stereo, fltp, 256 kb/s\n",
+			fps: 50, res: "3840x2160", codec: "HEVC",
+			audioCodec: "AC-3", audioRate: 48000, audioKbps: 384, audioCh: "5.1", tracks: 2,
 		},
 		{
-			name:  "no video stream",
-			input: "  Stream #0:0: Audio: aac, 48000 Hz, stereo\n",
-			fps:   0,
-			res:   "",
-			codec: "",
+			name: "audio only without video",
+			input: "  Stream #0:0: Audio: aac, 44100 Hz, mono, fltp, 128 kb/s\n",
+			fps: 0, res: "", codec: "",
+			audioCodec: "AAC", audioRate: 44100, audioKbps: 128, audioCh: "mono", tracks: 1,
+		},
+		{
+			name: "video only without audio",
+			input: "  Stream #0:0[0x100]: Video: h264, yuv420p, 1920x1080, 25 fps\n",
+			fps: 25, res: "1920x1080", codec: "H.264",
+			audioCodec: "", audioRate: 0, audioKbps: 0, audioCh: "", tracks: 0,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ParseFFmpegVideoMeta(tc.input)
 			if got.FPS != tc.fps || got.Resolution != tc.res || got.Codec != tc.codec {
-				t.Fatalf("ParseFFmpegVideoMeta = %+v, want fps=%v res=%q codec=%q", got, tc.fps, tc.res, tc.codec)
+				t.Fatalf("video meta = %+v, want fps=%v res=%q codec=%q", got, tc.fps, tc.res, tc.codec)
+			}
+			if got.AudioCodec != tc.audioCodec || got.AudioSampleRate != tc.audioRate ||
+				got.AudioBitrateKbps != tc.audioKbps || got.AudioChannels != tc.audioCh || got.AudioTracks != tc.tracks {
+				t.Fatalf("audio meta = %+v, want codec=%q rate=%d kbps=%d ch=%q tracks=%d",
+					got, tc.audioCodec, tc.audioRate, tc.audioKbps, tc.audioCh, tc.tracks)
 			}
 		})
 	}
@@ -206,13 +226,15 @@ func TestEndToEndFFmpegKeyframeFromRelayTee(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Generate a real live H.264 MPEG-TS stream with 2-second GOP (60 frames @ 30fps)
+	// Generate a real live H.264 + AAC 48kHz MPEG-TS stream with 2-second GOP (60 frames @ 30fps)
 	encCmd := exec.CommandContext(ctx, ffPath,
 		"-nostdin", "-loglevel", "error",
 		"-re", "-f", "lavfi", "-i", "smptebars=size=1280x720:rate=30",
+		"-re", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
 		"-pix_fmt", "yuv420p",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-b:v", "12000k", "-g", "60", "-keyint_min", "60",
+		"-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000",
 		"-f", "mpegts", "udp://"+tee.BoundUDPAddr()+"?pkt_size=1316",
 	)
 	if err := encCmd.Start(); err != nil {
@@ -246,7 +268,11 @@ func TestEndToEndFFmpegKeyframeFromRelayTee(t *testing.T) {
 			if !okMeta || meta.FPS != 30 || meta.Resolution != "1280x720" || meta.Codec != "H.264" {
 				t.Fatalf("VideoMeta = (%v, %+v), want 30fps 1280x720 H.264", okMeta, meta)
 			}
-			t.Logf("PASS: grabbed real 320x180 JPEG (%d bytes) + video meta (%s %s %.0ffps)", len(snap.Data), meta.Resolution, meta.Codec, meta.FPS)
+			if meta.AudioCodec != "AAC" || meta.AudioSampleRate != 48000 || meta.AudioTracks != 1 || meta.AudioBitrateKbps <= 0 {
+				t.Fatalf("AudioMeta = %+v, want AAC 48000Hz bitrate>0 tracks=1", meta)
+			}
+			t.Logf("PASS: grabbed real 320x180 JPEG (%d bytes) + AV meta (%s %s %.0ffps | %s %dHz %dkbps)",
+				len(snap.Data), meta.Resolution, meta.Codec, meta.FPS, meta.AudioCodec, meta.AudioSampleRate, meta.AudioBitrateKbps)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -167,6 +167,72 @@ export function formatVideoFps(leg?: LegLiveView): { text: string; tooltip: stri
   };
 }
 
+export function formatAudioSummary(leg?: LegLiveView): {
+  text: string;
+  tone: BroadcastTone;
+  tooltip: string;
+} {
+  if (!leg || !leg.node_online) {
+    return { text: "-", tone: "idle", tooltip: "未检测到音频流" };
+  }
+  const s = leg.sample;
+  if (s.fault_code === "STREAM_STOPPED" || !s.src_connected || s.src_mbps < 0.1) {
+    return { text: "-", tone: "idle", tooltip: "当前无音视频信号" };
+  }
+  if (leg.mode === "udp-passthrough" || s.encrypted) {
+    return { text: "-", tone: "idle", tooltip: "加密透传模式不解密载荷，无法读取音频采样率与码率" };
+  }
+
+  const rate = s.audio_sample_rate ?? 0;
+  const kbps = s.audio_bitrate_kbps ?? 0;
+  const tracks = s.audio_tracks ?? 0;
+  const videoProbed = (s.video_fps ?? 0) > 0 || !!s.video_codec || !!s.video_resolution;
+
+  if (rate <= 0 && tracks === 0) {
+    if (videoProbed) {
+      return {
+        text: "无音轨",
+        tone: "warn",
+        tooltip: "已检测到视频画面，但流中未发现音轨（请检查编码器音频开关）",
+      };
+    }
+    return { text: "探测中", tone: "idle", tooltip: "正在随缩略图探测音频采样率与码率" };
+  }
+
+  const rateText =
+    rate > 0
+      ? rate % 1000 === 0
+        ? `${rate / 1000}k`
+        : `${(rate / 1000).toFixed(1)}k`
+      : "";
+  const kbpsText = kbps > 0 ? `${kbps}k` : "";
+  const trackSuffix = tracks > 1 ? ` ×${tracks}` : "";
+
+  let text = "-";
+  if (rateText && kbpsText) {
+    text = `${rateText} · ${kbpsText}${trackSuffix}`;
+  } else if (rateText) {
+    text = `${rateText}${s.audio_codec ? ` ${s.audio_codec}` : ""}${trackSuffix}`;
+  } else if (kbpsText) {
+    text = `${kbpsText}${trackSuffix}`;
+  } else if (s.audio_codec) {
+    text = `${s.audio_codec}${trackSuffix}`;
+  }
+
+  const tooltip =
+    s.audio_detail ||
+    [
+      s.audio_codec,
+      rate > 0 ? (rate % 1000 === 0 ? `${rate / 1000} kHz` : `${(rate / 1000).toFixed(1)} kHz`) : "",
+      s.audio_channels,
+      kbps > 0 ? `${kbps} kb/s` : "码率未上报(VBR)",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+  return { text, tone: "ok", tooltip };
+}
+
 export interface ChannelLossSummary {
   text: string;
   tone: BroadcastTone;

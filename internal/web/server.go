@@ -343,6 +343,12 @@ func BuildSignalGroupViews(sheet config.EventSheet, allNodes map[string]model.No
 				sample.VideoFPS = 0
 				sample.VideoResolution = ""
 				sample.VideoCodec = ""
+				sample.AudioCodec = ""
+				sample.AudioSampleRate = 0
+				sample.AudioBitrateKbps = 0
+				sample.AudioChannels = ""
+				sample.AudioTracks = 0
+				sample.AudioDetail = ""
 			}
 
 			legs = append(legs, model.LegLiveView{

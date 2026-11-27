@@ -597,6 +597,18 @@ func (c *Collector) collectDemo(sheet config.EventSheet) (model.NodeLiveStatus, 
 					}
 					s.VideoResolution = "1920x1080"
 					s.VideoCodec = "H.264"
+					s.AudioCodec = "AAC"
+					s.AudioSampleRate = 48000
+					s.AudioChannels = "stereo"
+					if idx%3 == 0 {
+						s.AudioBitrateKbps = 256
+						s.AudioTracks = 2
+						s.AudioDetail = "音轨 #1: AAC · 48 kHz · stereo · 256 kb/s\n音轨 #2: AAC · 48 kHz · stereo · 192 kb/s"
+					} else {
+						s.AudioBitrateKbps = 192
+						s.AudioTracks = 1
+						s.AudioDetail = "音轨 #1: AAC · 48 kHz · stereo · 192 kb/s"
+					}
 				}
 
 				// Show ARQ recovery with 0 unrecovered drops on healthy routes so Recovered vs Dropped is clear

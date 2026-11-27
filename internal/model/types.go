@@ -102,12 +102,18 @@ type ChannelSample struct {
 	DstPeerIP     string  `json:"dst_peer_ip"`
 
 	// Path metadata & telemetry quality
-	PathMedium      string  `json:"path_medium"`                // WAN, LO, WAN+LO, -
-	HasNativeStats  bool    `json:"has_native_stats"`           // true if Mode A JSON stats or Mode B passd stats observed
-	Encrypted       bool    `json:"encrypted"`
-	VideoFPS        float64 `json:"video_fps,omitempty"`        // detected from Mode A preview stream probe
-	VideoResolution string  `json:"video_resolution,omitempty"` // e.g. "1920x1080"
-	VideoCodec      string  `json:"video_codec,omitempty"`      // e.g. "H.264", "HEVC"
+	PathMedium       string  `json:"path_medium"`                  // WAN, LO, WAN+LO, -
+	HasNativeStats   bool    `json:"has_native_stats"`             // true if Mode A JSON stats or Mode B passd stats observed
+	Encrypted        bool    `json:"encrypted"`
+	VideoFPS         float64 `json:"video_fps,omitempty"`          // detected from Mode A preview stream probe
+	VideoResolution  string  `json:"video_resolution,omitempty"`   // e.g. "1920x1080"
+	VideoCodec       string  `json:"video_codec,omitempty"`        // e.g. "H.264", "HEVC"
+	AudioCodec       string  `json:"audio_codec,omitempty"`        // e.g. "AAC", "MP2", "AC-3"
+	AudioSampleRate  int     `json:"audio_sample_rate,omitempty"`  // Hz, e.g. 48000
+	AudioBitrateKbps int     `json:"audio_bitrate_kbps,omitempty"` // kb/s, e.g. 192
+	AudioChannels    string  `json:"audio_channels,omitempty"`     // e.g. "stereo", "mono", "5.1"
+	AudioTracks      int     `json:"audio_tracks,omitempty"`       // count of detected audio tracks
+	AudioDetail      string  `json:"audio_detail,omitempty"`       // formatted per-track breakdown for hover tooltip
 
 	// Layer 4: single-channel automatic fault isolation
 	FaultCode    FaultCode `json:"fault_code"`

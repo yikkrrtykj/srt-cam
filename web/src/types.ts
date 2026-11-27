@@ -52,6 +52,12 @@ export interface ChannelSample {
   video_fps?: number;
   video_resolution?: string;
   video_codec?: string;
+  audio_codec?: string;
+  audio_sample_rate?: number;
+  audio_bitrate_kbps?: number;
+  audio_channels?: string;
+  audio_tracks?: number;
+  audio_detail?: string;
   fault_code: string;
   fault_layer: string;
   fault_summary: string;

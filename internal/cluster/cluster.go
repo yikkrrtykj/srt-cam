@@ -486,6 +486,12 @@ func (m *Manager) simulateDemoPeers(sheet config.EventSheet) {
 						}
 						s.VideoResolution = "1920x1080"
 						s.VideoCodec = "H.264"
+						s.AudioCodec = "AAC"
+						s.AudioSampleRate = 48000
+						s.AudioChannels = "stereo"
+						s.AudioBitrateKbps = 192
+						s.AudioTracks = 1
+						s.AudioDetail = "音轨 #1: AAC · 48 kHz · stereo · 192 kb/s"
 					}
 					if grp.ID == "16mv-1" && leg.Role == "primary" {
 						s.SrcLost = 1
