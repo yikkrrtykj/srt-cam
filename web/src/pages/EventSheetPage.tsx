@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Check, Copy, Download, HelpCircle, Plus, Save, Trash2 } from "lucide-react";
+import { Check, Copy, Download, HelpCircle, Plus, Save, Terminal, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { EventSheet, LegConfig, NodeLiveStatus, SignalGroupConfig } from "@/types";
 import { api, resolveNodeHost } from "@/api";
+import { copyToClipboard } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -37,14 +38,33 @@ const PASS_PRESETS = Array.from({ length: 4 }, (_, idx) => {
   const n = idx + 1;
   return {
     channel_id: `srt-pass${n}`,
-    label: `透传通道 ${n} (端口 ${31110 + n})`,
+    label: `透传通道 ${n} (VPS 监听 ${31110 + n})`,
     mode: "udp-passthrough" as const,
     in_port: 31110 + n,
     out_port: 41110 + n,
+    metrics_port: 19100 + n,
   };
 });
 
 const ALL_PRESETS = [...RELAY_PRESETS, ...PASS_PRESETS];
+
+function parsePortSuffix(addr: string): number | null {
+  const idx = addr.lastIndexOf(":");
+  if (idx < 0) return null;
+  const p = Number(addr.slice(idx + 1).trim());
+  return Number.isInteger(p) && p > 0 && p <= 65535 ? p : null;
+}
+
+function buildPassRunCmd(leg: LegConfig): string {
+  const preset = PASS_PRESETS.find((p) => p.channel_id === leg.channel_id);
+  const metricsPort = preset?.metrics_port ?? 19101;
+  const target = leg.target_addr?.trim() || `<演播室公网IP>:${leg.out_port || 41111}`;
+  return [
+    `cd ~/srt-cam && docker build -f deploy/Dockerfile.pass -t local-srt-pass:v2 .`,
+    `docker rm -f ${leg.channel_id} 2>/dev/null || true`,
+    `docker run -d --name ${leg.channel_id} --restart always --network host local-srt-pass:v2 --id=${leg.channel_id} --listen=:${leg.in_port} --target=${target} --metrics=127.0.0.1:${metricsPort}`,
+  ].join("\n");
+}
 
 export function EventSheetPage({ nodes, onSaved }: Props) {
   const [sheet, setSheet] = useState<EventSheet | null>(null);
@@ -62,7 +82,6 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
 
   async function handleSave() {
     if (!sheet) return;
-    // Client-side guard before hitting backend
     for (const grp of sheet.signal_groups) {
       const seen = new Set<string>();
       for (const leg of grp.legs) {
@@ -72,6 +91,10 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
           return;
         }
         seen.add(key);
+        if (leg.mode === "udp-passthrough" && !leg.target_addr?.trim()) {
+          toast.error(`信号「${grp.name}」选择了加密透传，请填写演播室解码器的公网 IP:端口`);
+          return;
+        }
       }
     }
     setSaving(true);
@@ -99,12 +122,12 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
   }
 
   async function copyText(key: string, label: string, text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyToClipboard(text);
+    if (ok) {
       setCopiedKey(key);
       toast.success(`已复制${label}`);
       window.setTimeout(() => setCopiedKey((cur) => (cur === key ? "" : cur)), 1500);
-    } catch {
+    } else {
       toast.error("复制失败");
     }
   }
@@ -125,7 +148,6 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
     setSheet(next);
   }
 
-  // Keep dual-leg roles mutually exclusive (always 1 primary + 1 backup)
   function updateDualLegRole(gIdx: number, lIdx: number, nextRole: "primary" | "backup") {
     if (!sheet) return;
     const grp = sheet.signal_groups[gIdx];
@@ -149,6 +171,45 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
       });
     } else {
       updateLeg(gIdx, lIdx, { channel_id: channelId });
+    }
+  }
+
+  function handleModeChange(gIdx: number, lIdx: number, nextMode: LegConfig["mode"]) {
+    if (!sheet) return;
+    const leg = sheet.signal_groups[gIdx].legs[lIdx];
+    const usedOnNode = new Set(
+      sheet.signal_groups.flatMap((g) =>
+        g.legs.filter((l) => l.node_id === leg.node_id).map((l) => l.channel_id)
+      )
+    );
+
+    if (nextMode === "udp-passthrough") {
+      const alreadyPass = PASS_PRESETS.some((p) => p.channel_id === leg.channel_id);
+      if (alreadyPass) {
+        updateLeg(gIdx, lIdx, { mode: nextMode });
+        return;
+      }
+      const preset = PASS_PRESETS.find((p) => !usedOnNode.has(p.channel_id)) ?? PASS_PRESETS[0];
+      updateLeg(gIdx, lIdx, {
+        mode: nextMode,
+        channel_id: preset.channel_id,
+        in_port: preset.in_port,
+        out_port: preset.out_port,
+      });
+    } else {
+      const alreadyRelay = RELAY_PRESETS.some((p) => p.channel_id === leg.channel_id);
+      if (alreadyRelay) {
+        updateLeg(gIdx, lIdx, { mode: nextMode, target_addr: "" });
+        return;
+      }
+      const preset = RELAY_PRESETS.find((p) => !usedOnNode.has(p.channel_id)) ?? RELAY_PRESETS[0];
+      updateLeg(gIdx, lIdx, {
+        mode: nextMode,
+        channel_id: preset.channel_id,
+        in_port: preset.in_port,
+        out_port: preset.out_port,
+        target_addr: "",
+      });
     }
   }
 
@@ -190,8 +251,6 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
     const otherNode = nodes.find((n) => n.node_id !== first?.node_id)?.node_id;
     const backupNode = otherNode || first?.node_id || defaultNodeId;
 
-    // If backup is on a different VPS, reusing the same channel number is clean & idiomatic;
-    // if only 1 VPS exists, pick an unused channel on that same VPS so ports never collide.
     let backupChannelId = first?.channel_id || "srt-cam1";
     let backupMode = first?.mode || ("srt-relay" as const);
     let backupInPort = first?.in_port || 20001;
@@ -224,6 +283,7 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
       dst_device: "",
       in_port: backupInPort,
       out_port: backupOutPort,
+      target_addr: first?.mode === "udp-passthrough" ? first.target_addr || "" : "",
     };
     const legs = grp.legs.map((l, idx) => (idx === 0 ? { ...l, role: "primary" } : l));
     legs.push(backup);
@@ -344,328 +404,391 @@ export function EventSheetPage({ nodes, onSaved }: Props) {
 
       {/* Signal Group Cards */}
       <div className="space-y-3.5">
-        {sheet.signal_groups.map((grp, gIdx) => (
-          <section
-            key={grp.id + gIdx}
-            className="rounded-lg border border-[#232730] bg-[#111316] overflow-hidden"
-          >
-            {/* Signal Header */}
-            <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-[#1E222B] bg-[#14171C] px-4 py-2.5">
-              <div className="flex flex-wrap items-center gap-2.5">
-                <Input
-                  className="w-[155px] font-medium text-[#F1F3F6]"
-                  value={grp.name}
-                  onChange={(e) => updateGroup(gIdx, { name: e.target.value })}
-                  placeholder="信号名（如 PGM）"
-                />
-
-                <Select
-                  value={grp.direction}
-                  onValueChange={(v) =>
-                    updateGroup(gIdx, { direction: v as SignalGroupConfig["direction"] })
-                  }
-                >
-                  <SelectTrigger className="w-[190px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="venue_to_hub">
-                      {siteA} → {siteB}
-                    </SelectItem>
-                    <SelectItem value="hub_to_venue">
-                      {siteB} → {siteA}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <Select
-                  value={grp.redundancy_type}
-                  onValueChange={(v) =>
-                    updateGroup(gIdx, {
-                      redundancy_type: v as SignalGroupConfig["redundancy_type"],
-                    })
-                  }
-                >
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="single">单路传输</SelectItem>
-                    <SelectItem value="dual_hardware">双机热备</SelectItem>
-                    <SelectItem value="makito_bonding">单机双路无缝</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <label className="inline-flex items-center gap-2 pl-1 text-[12px] text-[#C8CFD9] cursor-pointer select-none">
-                  <Switch
-                    checked={grp.expected_active}
-                    onCheckedChange={(checked) => updateGroup(gIdx, { expected_active: checked })}
+        {sheet.signal_groups.map((grp, gIdx) => {
+          const hasPassLeg = grp.legs.some((l) => l.mode === "udp-passthrough");
+          return (
+            <section
+              key={grp.id + gIdx}
+              className="rounded-lg border border-[#232730] bg-[#111316] overflow-hidden"
+            >
+              {/* Signal Header */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-[#1E222B] bg-[#14171C] px-4 py-2.5">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <Input
+                    className="w-[155px] font-medium text-[#F1F3F6]"
+                    value={grp.name}
+                    onChange={(e) => updateGroup(gIdx, { name: e.target.value })}
+                    placeholder="信号名（如 PGM）"
                   />
-                  断流告警
-                </label>
-              </div>
 
-              <div className="flex items-center gap-2">
-                {grp.legs.length < 2 && (
-                  <Button variant="outline" size="xs" onClick={() => addBackupLeg(gIdx)}>
-                    <Plus className="h-3 w-3" />
-                    添加备路
+                  <Select
+                    value={grp.direction}
+                    onValueChange={(v) =>
+                      updateGroup(gIdx, { direction: v as SignalGroupConfig["direction"] })
+                    }
+                  >
+                    <SelectTrigger className="w-[190px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="venue_to_hub">
+                        {siteA} → {siteB}
+                      </SelectItem>
+                      <SelectItem value="hub_to_venue">
+                        {siteB} → {siteA}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <Select
+                    value={grp.redundancy_type}
+                    onValueChange={(v) =>
+                      updateGroup(gIdx, {
+                        redundancy_type: v as SignalGroupConfig["redundancy_type"],
+                      })
+                    }
+                  >
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="single">单路传输</SelectItem>
+                      <SelectItem value="dual_hardware">双机热备</SelectItem>
+                      <SelectItem value="makito_bonding">单机双路无缝</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <label className="inline-flex items-center gap-2 pl-1 text-[12px] text-[#C8CFD9] cursor-pointer select-none">
+                    <Switch
+                      checked={grp.expected_active}
+                      onCheckedChange={(checked) => updateGroup(gIdx, { expected_active: checked })}
+                    />
+                    断流告警
+                  </label>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {grp.legs.length < 2 && (
+                    <Button variant="outline" size="xs" onClick={() => addBackupLeg(gIdx)}>
+                      <Plus className="h-3 w-3" />
+                      添加备路
+                    </Button>
+                  )}
+                  <Button variant="danger" size="xs" onClick={() => removeGroup(gIdx)}>
+                    <Trash2 className="h-3 w-3" />
+                    删除
                   </Button>
-                )}
-                <Button variant="danger" size="xs" onClick={() => removeGroup(gIdx)}>
-                  <Trash2 className="h-3 w-3" />
-                  删除
-                </Button>
+                </div>
               </div>
-            </div>
 
-            {/* Legs Table */}
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-[12px]">
-                <thead className="border-b border-[#1E222B] text-[11px] text-[#757E8F]">
-                  <tr>
-                    <th className="px-4 py-2 font-medium">主备</th>
-                    <th className="px-2 py-2 font-medium">中转服务器</th>
-                    <th className="px-2 py-2 font-medium">通道号</th>
-                    <th className="px-2 py-2 font-medium">
-                      <span className="inline-flex items-center gap-1">
-                        传输模式
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <HelpCircle className="h-3 w-3 text-[#656E7E] cursor-help" />
-                          </TooltipTrigger>
-                          <TooltipContent className="max-w-[300px] space-y-1">
-                            <div>
-                              <strong className="text-[#F1F3F6]">标准中转</strong>：推流与拉流端均作 Caller，无需端口映射，支持 vMix/OBS/手机/普通编解码器与画面缩略图（常用）。
-                            </div>
-                            <div>
-                              <strong className="text-[#F1F3F6]">加密透传</strong>：UDP 原始包直通不解密，保留 SRT 包序号，专为 Haivision Makito X4 双路无缝合流准备。
-                            </div>
-                          </TooltipContent>
-                        </Tooltip>
-                      </span>
-                    </th>
-                    <th className="px-2 py-2 font-medium">线路备注</th>
-                    <th className="px-2 py-2 font-medium">发端设备</th>
-                    <th className="px-2 py-2 font-medium">收端设备</th>
-                    <th className="px-4 py-2 font-medium">推流 / 拉流端口</th>
-                    {grp.legs.length > 1 && <th className="px-2 py-2" />}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1A1E26]">
-                  {grp.legs.map((leg, lIdx) => {
-                    const isKnownPreset = ALL_PRESETS.some((p) => p.channel_id === leg.channel_id);
-                    return (
-                      <tr key={lIdx}>
-                        <td className="px-4 py-2">
-                          {grp.legs.length === 1 ? (
-                            <span className="inline-flex h-8 w-[76px] items-center justify-center rounded-md border border-[#232730] bg-[#14171C] text-[12px] text-[#98A1B0]">
-                              单路
-                            </span>
-                          ) : (
+              {/* Legs Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-[12px]">
+                  <thead className="border-b border-[#1E222B] text-[11px] text-[#757E8F]">
+                    <tr>
+                      <th className="px-4 py-2 font-medium">主备</th>
+                      <th className="px-2 py-2 font-medium">中转服务器</th>
+                      <th className="px-2 py-2 font-medium">通道号</th>
+                      <th className="px-2 py-2 font-medium">
+                        <span className="inline-flex items-center gap-1">
+                          传输模式
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <HelpCircle className="h-3 w-3 text-[#656E7E] cursor-help" />
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-[300px] space-y-1">
+                              <div>
+                                <strong className="text-[#F1F3F6]">标准中转</strong>：推流与拉流端均作 Caller，无需端口映射，支持 vMix/OBS/手机/普通编解码器与画面缩略图（常用）。
+                              </div>
+                              <div>
+                                <strong className="text-[#F1F3F6]">加密透传</strong>：UDP 原始包直通不解密，保留 SRT 包序号，专为 Haivision Makito X4 双路无缝合流准备（需填演播室解码器公网 IP:端口）。
+                              </div>
+                            </TooltipContent>
+                          </Tooltip>
+                        </span>
+                      </th>
+                      <th className="px-2 py-2 font-medium">线路备注</th>
+                      <th className="px-2 py-2 font-medium">发端设备</th>
+                      <th className="px-2 py-2 font-medium">收端设备</th>
+                      <th className="px-4 py-2 font-medium">
+                        {hasPassLeg ? "监听端口 → 演播室解码器 IP:端口" : "推流 / 拉流端口"}
+                      </th>
+                      {grp.legs.length > 1 && <th className="px-2 py-2" />}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1A1E26]">
+                    {grp.legs.map((leg, lIdx) => {
+                      const isKnownPreset = ALL_PRESETS.some((p) => p.channel_id === leg.channel_id);
+                      const isPass = leg.mode === "udp-passthrough";
+                      return (
+                        <tr key={lIdx}>
+                          <td className="px-4 py-2">
+                            {grp.legs.length === 1 ? (
+                              <span className="inline-flex h-8 w-[76px] items-center justify-center rounded-md border border-[#232730] bg-[#14171C] text-[12px] text-[#98A1B0]">
+                                单路
+                              </span>
+                            ) : (
+                              <Select
+                                value={leg.role === "backup" ? "backup" : "primary"}
+                                onValueChange={(v) =>
+                                  updateDualLegRole(gIdx, lIdx, v as "primary" | "backup")
+                                }
+                              >
+                                <SelectTrigger className="w-[78px]">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="primary">主路</SelectItem>
+                                  <SelectItem value="backup">备路</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            )}
+                          </td>
+
+                          <td className="px-2 py-2">
                             <Select
-                              value={leg.role === "backup" ? "backup" : "primary"}
-                              onValueChange={(v) =>
-                                updateDualLegRole(gIdx, lIdx, v as "primary" | "backup")
-                              }
+                              value={leg.node_id}
+                              onValueChange={(v) => updateLeg(gIdx, lIdx, { node_id: v })}
                             >
-                              <SelectTrigger className="w-[78px]">
+                              <SelectTrigger className="w-[132px] tabular">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="primary">主路</SelectItem>
-                                <SelectItem value="backup">备路</SelectItem>
+                                {nodeOptions.map(([id, label]) => (
+                                  <SelectItem key={id} value={id}>
+                                    {id === label ? id : `${id} (${label})`}
+                                  </SelectItem>
+                                ))}
                               </SelectContent>
                             </Select>
-                          )}
-                        </td>
-
-                        <td className="px-2 py-2">
-                          <Select
-                            value={leg.node_id}
-                            onValueChange={(v) => updateLeg(gIdx, lIdx, { node_id: v })}
-                          >
-                            <SelectTrigger className="w-[136px] tabular">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {nodeOptions.map(([id, label]) => (
-                                <SelectItem key={id} value={id}>
-                                  {id === label ? id : `${id} (${label})`}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </td>
-
-                        <td className="px-2 py-2">
-                          <Select
-                            value={leg.channel_id}
-                            onValueChange={(v) => handlePresetChannel(gIdx, lIdx, v)}
-                          >
-                            <SelectTrigger className="w-[240px] tabular">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {!isKnownPreset && (
-                                <SelectItem value={leg.channel_id}>
-                                  {leg.channel_id}（自定义）
-                                </SelectItem>
-                              )}
-                              <SelectGroup>
-                                <SelectLabel>标准中转通道 (推流 + 拉流)</SelectLabel>
-                                {RELAY_PRESETS.map((p) => (
-                                  <SelectItem key={p.channel_id} value={p.channel_id}>
-                                    {p.label}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                              <SelectGroup>
-                                <SelectLabel>加密透传通道 (Makito 无缝)</SelectLabel>
-                                {PASS_PRESETS.map((p) => (
-                                  <SelectItem key={p.channel_id} value={p.channel_id}>
-                                    {p.label}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            </SelectContent>
-                          </Select>
-                        </td>
-
-                        <td className="px-2 py-2">
-                          <Select
-                            value={leg.mode}
-                            onValueChange={(v) =>
-                              updateLeg(gIdx, lIdx, { mode: v as LegConfig["mode"] })
-                            }
-                          >
-                            <SelectTrigger className="w-[126px]">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="srt-relay">标准中转</SelectItem>
-                              <SelectItem value="udp-passthrough">加密透传</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </td>
-
-                        <td className="px-2 py-2">
-                          <Input
-                            className="w-[82px]"
-                            value={leg.carrier}
-                            placeholder="公网"
-                            onChange={(e) => updateLeg(gIdx, lIdx, { carrier: e.target.value })}
-                          />
-                        </td>
-
-                        <td className="px-2 py-2">
-                          <Input
-                            className="w-[138px]"
-                            value={leg.src_device}
-                            placeholder="编码器"
-                            onChange={(e) =>
-                              updateLeg(gIdx, lIdx, { src_device: e.target.value })
-                            }
-                          />
-                        </td>
-
-                        <td className="px-2 py-2">
-                          <Input
-                            className="w-[138px]"
-                            value={leg.dst_device}
-                            placeholder="解码器"
-                            onChange={(e) =>
-                              updateLeg(gIdx, lIdx, { dst_device: e.target.value })
-                            }
-                          />
-                        </td>
-
-                        <td className="px-4 py-2 whitespace-nowrap">
-                          <div className="inline-flex items-center gap-1.5">
-                            <Input
-                              className="w-[72px] tabular"
-                              type="number"
-                              value={leg.in_port}
-                              onChange={(e) =>
-                                updateLeg(gIdx, lIdx, { in_port: Number(e.target.value) })
-                              }
-                            />
-                            <span className="text-[#586070]">/</span>
-                            <Input
-                              className="w-[72px] tabular"
-                              type="number"
-                              value={leg.out_port}
-                              onChange={(e) =>
-                                updateLeg(gIdx, lIdx, { out_port: Number(e.target.value) })
-                              }
-                            />
-                          </div>
-                        </td>
-
-                        {grp.legs.length > 1 && (
-                          <td className="px-2 py-2 text-right">
-                            <Button
-                              variant="ghost"
-                              size="xs"
-                              onClick={() => removeLeg(gIdx, lIdx)}
-                            >
-                              移除
-                            </Button>
                           </td>
-                        )}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
 
-            {/* Copyable SRT URL Footer Bar */}
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-[#1C2028] bg-[#0D0F12] px-4 py-2.5 text-[11.5px]">
-              {grp.legs.map((leg, lIdx) => {
-                const host = resolveNodeHost(nodes, leg.node_id);
-                const push = `srt://${host}:${leg.in_port}`;
-                const pull = `srt://${host}:${leg.out_port}`;
-                const roleTag =
-                  grp.legs.length > 1 ? (leg.role === "backup" ? "[备] " : "[主] ") : "";
-                const kPush = `${gIdx}-${lIdx}-push`;
-                const kPull = `${gIdx}-${lIdx}-pull`;
-                return (
-                  <div key={lIdx} className="inline-flex flex-wrap items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => void copyText(kPush, "推流地址", push)}
-                      className="inline-flex items-center gap-1.5 text-[#98A1B0] hover:text-[#F1F3F6] cursor-pointer"
-                    >
-                      <span>{roleTag}推流:</span>
-                      <code className="tabular text-[#E6E9EF]">{push}</code>
-                      {copiedKey === kPush ? (
-                        <Check className="h-3 w-3 text-[#4ADE80]" />
-                      ) : (
-                        <Copy className="h-3 w-3 text-[#6B7485]" />
-                      )}
-                    </button>
-                    {leg.mode !== "udp-passthrough" && (
+                          <td className="px-2 py-2">
+                            <Select
+                              value={leg.channel_id}
+                              onValueChange={(v) => handlePresetChannel(gIdx, lIdx, v)}
+                            >
+                              <SelectTrigger className="w-[232px] tabular">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {!isKnownPreset && (
+                                  <SelectItem value={leg.channel_id}>
+                                    {leg.channel_id}（自定义）
+                                  </SelectItem>
+                                )}
+                                <SelectGroup>
+                                  <SelectLabel>标准中转通道 (推流 + 拉流)</SelectLabel>
+                                  {RELAY_PRESETS.map((p) => (
+                                    <SelectItem key={p.channel_id} value={p.channel_id}>
+                                      {p.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
+                                <SelectGroup>
+                                  <SelectLabel>加密透传通道 (Makito 无缝)</SelectLabel>
+                                  {PASS_PRESETS.map((p) => (
+                                    <SelectItem key={p.channel_id} value={p.channel_id}>
+                                      {p.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                          </td>
+
+                          <td className="px-2 py-2">
+                            <Select
+                              value={leg.mode}
+                              onValueChange={(v) =>
+                                handleModeChange(gIdx, lIdx, v as LegConfig["mode"])
+                              }
+                            >
+                              <SelectTrigger className="w-[118px]">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="srt-relay">标准中转</SelectItem>
+                                <SelectItem value="udp-passthrough">加密透传</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </td>
+
+                          <td className="px-2 py-2">
+                            <Input
+                              className="w-[76px]"
+                              value={leg.carrier}
+                              placeholder="公网"
+                              onChange={(e) => updateLeg(gIdx, lIdx, { carrier: e.target.value })}
+                            />
+                          </td>
+
+                          <td className="px-2 py-2">
+                            <Input
+                              className="w-[126px]"
+                              value={leg.src_device}
+                              placeholder="编码器"
+                              onChange={(e) =>
+                                updateLeg(gIdx, lIdx, { src_device: e.target.value })
+                              }
+                            />
+                          </td>
+
+                          <td className="px-2 py-2">
+                            <Input
+                              className="w-[126px]"
+                              value={leg.dst_device}
+                              placeholder="解码器"
+                              onChange={(e) =>
+                                updateLeg(gIdx, lIdx, { dst_device: e.target.value })
+                              }
+                            />
+                          </td>
+
+                          <td className="px-4 py-2 whitespace-nowrap">
+                            {isPass ? (
+                              <div className="inline-flex items-center gap-1.5">
+                                <Input
+                                  className="w-[70px] tabular"
+                                  type="number"
+                                  value={leg.in_port}
+                                  title="VPS 透传入口监听端口"
+                                  onChange={(e) =>
+                                    updateLeg(gIdx, lIdx, { in_port: Number(e.target.value) })
+                                  }
+                                />
+                                <span className="text-[#656E7E]">→</span>
+                                <Input
+                                  className="w-[172px] tabular"
+                                  value={leg.target_addr || ""}
+                                  placeholder="演播室IP:41111"
+                                  title="演播室解码器公网 IP 与监听端口"
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    const parsedPort = parsePortSuffix(val);
+                                    updateLeg(gIdx, lIdx, {
+                                      target_addr: val,
+                                      ...(parsedPort ? { out_port: parsedPort } : {}),
+                                    });
+                                  }}
+                                />
+                              </div>
+                            ) : (
+                              <div className="inline-flex items-center gap-1.5">
+                                <Input
+                                  className="w-[72px] tabular"
+                                  type="number"
+                                  value={leg.in_port}
+                                  onChange={(e) =>
+                                    updateLeg(gIdx, lIdx, { in_port: Number(e.target.value) })
+                                  }
+                                />
+                                <span className="text-[#586070]">/</span>
+                                <Input
+                                  className="w-[72px] tabular"
+                                  type="number"
+                                  value={leg.out_port}
+                                  onChange={(e) =>
+                                    updateLeg(gIdx, lIdx, { out_port: Number(e.target.value) })
+                                  }
+                                />
+                              </div>
+                            )}
+                          </td>
+
+                          {grp.legs.length > 1 && (
+                            <td className="px-2 py-2 text-right">
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                onClick={() => removeLeg(gIdx, lIdx)}
+                              >
+                                移除
+                              </Button>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Copyable SRT URL Footer Bar */}
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-[#1C2028] bg-[#0D0F12] px-4 py-2.5 text-[11.5px]">
+                {grp.legs.map((leg, lIdx) => {
+                  const host = resolveNodeHost(nodes, leg.node_id);
+                  const push = `srt://${host}:${leg.in_port}`;
+                  const pull = `srt://${host}:${leg.out_port}`;
+                  const roleTag =
+                    grp.legs.length > 1 ? (leg.role === "backup" ? "[备] " : "[主] ") : "";
+                  const kPush = `${gIdx}-${lIdx}-push`;
+                  const kPull = `${gIdx}-${lIdx}-pull`;
+                  const kPassCmd = `${gIdx}-${lIdx}-passcmd`;
+                  return (
+                    <div key={lIdx} className="inline-flex flex-wrap items-center gap-3">
                       <button
                         type="button"
-                        onClick={() => void copyText(kPull, "拉流地址", pull)}
+                        onClick={() => void copyText(kPush, "推流地址", push)}
                         className="inline-flex items-center gap-1.5 text-[#98A1B0] hover:text-[#F1F3F6] cursor-pointer"
                       >
-                        <span>{roleTag}拉流:</span>
-                        <code className="tabular text-[#E6E9EF]">{pull}</code>
-                        {copiedKey === kPull ? (
+                        <span>{roleTag}推流:</span>
+                        <code className="tabular text-[#E6E9EF]">{push}</code>
+                        {copiedKey === kPush ? (
                           <Check className="h-3 w-3 text-[#4ADE80]" />
                         ) : (
                           <Copy className="h-3 w-3 text-[#6B7485]" />
                         )}
                       </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        ))}
+                      {leg.mode !== "udp-passthrough" ? (
+                        <button
+                          type="button"
+                          onClick={() => void copyText(kPull, "拉流地址", pull)}
+                          className="inline-flex items-center gap-1.5 text-[#98A1B0] hover:text-[#F1F3F6] cursor-pointer"
+                        >
+                          <span>{roleTag}拉流:</span>
+                          <code className="tabular text-[#E6E9EF]">{pull}</code>
+                          {copiedKey === kPull ? (
+                            <Check className="h-3 w-3 text-[#4ADE80]" />
+                          ) : (
+                            <Copy className="h-3 w-3 text-[#6B7485]" />
+                          )}
+                        </button>
+                      ) : (
+                        <>
+                          <span className="inline-flex items-center gap-1.5 text-[#98A1B0]">
+                            <span>→ 透传目标:</span>
+                            <code className="tabular text-[#E6E9EF]">
+                              {leg.target_addr?.trim() || "请先填写演播室IP:端口"}
+                            </code>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void copyText(
+                                kPassCmd,
+                                `${leg.channel_id} 透传容器启动命令`,
+                                buildPassRunCmd(leg)
+                              )
+                            }
+                            className="inline-flex items-center gap-1 rounded border border-[#2A2F3A] bg-[#161920] px-2 py-0.5 text-[11px] text-[#C8CFD9] hover:text-white hover:border-[#3A4150] cursor-pointer"
+                          >
+                            {copiedKey === kPassCmd ? (
+                              <Check className="h-3 w-3 text-[#4ADE80]" />
+                            ) : (
+                              <Terminal className="h-3 w-3" />
+                            )}
+                            复制透传启动命令
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
       </div>
 
       <div>

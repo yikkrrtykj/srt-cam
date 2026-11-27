@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/clipboard";
 
 interface Props {
   group: SignalGroupLiveView;
@@ -63,10 +64,10 @@ export function ChannelLogsPanel({ group, legIdx }: Props) {
     const text = filtered
       .map((l) => `${l.ts ? l.ts + " " : ""}[${l.level.toUpperCase()}] ${l.text}`)
       .join("\n");
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyToClipboard(text);
+    if (ok) {
       toast.success(`已复制 ${filtered.length} 行通信记录`);
-    } catch {
+    } else {
       toast.error("复制失败");
     }
   }
