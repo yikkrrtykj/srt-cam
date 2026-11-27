@@ -9,7 +9,7 @@ x-srt-relay-base: &srt-relay-base
     context: ..
     dockerfile: deploy/Dockerfile.relay
   network_mode: "host"
-  restart: always
+  restart: unless-stopped
   logging:
     driver: "json-file"
     options:
@@ -22,7 +22,7 @@ x-srt-pass-base: &srt-pass-base
     context: ..
     dockerfile: deploy/Dockerfile.pass
   network_mode: "host"
-  restart: always
+  restart: unless-stopped
   logging:
     driver: "json-file"
     options:

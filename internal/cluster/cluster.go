@@ -30,17 +30,19 @@ type Manager struct {
 	httpClient *http.Client
 	startedAt  time.Time
 
-	mu    sync.RWMutex
-	peers map[string]model.NodeLiveStatus
+	mu          sync.RWMutex
+	peers       map[string]model.NodeLiveStatus
+	demoStopped map[string]bool
 }
 
 // NewManager creates a multi-VPS cluster aggregator for all configured peers.
 func NewManager(cfg config.NodeConfig) *Manager {
 	m := &Manager{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: 3 * time.Second},
-		startedAt:  time.Now(),
-		peers:      make(map[string]model.NodeLiveStatus),
+		cfg:         cfg,
+		httpClient:  &http.Client{Timeout: 3 * time.Second},
+		startedAt:   time.Now(),
+		peers:       make(map[string]model.NodeLiveStatus),
+		demoStopped: make(map[string]bool),
 	}
 	for _, p := range cfg.Peers {
 		m.peers[p.NodeID] = model.NodeLiveStatus{
@@ -223,6 +225,50 @@ func (m *Manager) RestartPeerChannel(ctx context.Context, nodeID, channelID, ope
 	return nil
 }
 
+// SetPeerChannelPower proxies an authenticated single-channel start/stop command to a remote peer VPS.
+func (m *Manager) SetPeerChannelPower(ctx context.Context, nodeID, channelID string, start bool, operator string) error {
+	if m.cfg.DemoMode {
+		m.mu.Lock()
+		key := nodeID + "/" + channelID
+		if start {
+			delete(m.demoStopped, key)
+		} else {
+			m.demoStopped[key] = true
+		}
+		m.mu.Unlock()
+		return nil
+	}
+	peer, ok := m.findPeer(nodeID)
+	if !ok {
+		return fmt.Errorf("peer node %q not configured", nodeID)
+	}
+	action := "stop"
+	if start {
+		action = "start"
+	}
+	body, _ := json.Marshal(map[string]string{
+		"channel_id": channelID,
+		"action":     action,
+		"operator":   operator,
+	})
+	endpoint := strings.TrimRight(peer.APIURL, "/") + "/api/peer/channel-power"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+peer.APIToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("peer %s %s HTTP %d", nodeID, action, resp.StatusCode)
+	}
+	return nil
+}
+
 // QueryPeerLogs fetches raw container logs from a remote peer VPS via GET /api/peer/logs.
 func (m *Manager) QueryPeerLogs(ctx context.Context, nodeID, channelID string, sinceSec, tail int) (string, error) {
 	if m.cfg.DemoMode {
@@ -389,19 +435,30 @@ func (m *Manager) simulateDemoPeers(sheet config.EventSheet) {
 					srcPeerIP = fmt.Sprintf("203.0.113.%d", 31+idx+pIdx)
 					dstPeerIP = fmt.Sprintf("198.51.100.%d", 71+idx+pIdx)
 				}
+				m.mu.RLock()
+				stopped := !grp.IsEnabled() || m.demoStopped[peer.NodeID+"/"+leg.ChannelID]
+				m.mu.RUnlock()
+
+				procState := "running"
+				uptime := 86400*6 + int64(elapsed)
+				if stopped {
+					procState = "exited"
+					uptime = 0
+				}
+
 				s := model.ChannelSample{
 					Timestamp:      now.Unix(),
 					NodeID:         peer.NodeID,
 					ChannelID:      leg.ChannelID,
 					Mode:           leg.Mode,
-					ProcessState:   "running",
+					ProcessState:   procState,
 					RestartCount:   0,
-					UptimeSec:      86400*6 + int64(elapsed),
-					HasNativeStats: true,
+					UptimeSec:      uptime,
+					HasNativeStats: !stopped,
 					Encrypted:      leg.Mode == model.ModeUDPPassthrough,
 					PathMedium:     "WAN",
 				}
-				if grp.ExpectedActive {
+				if !stopped && grp.ExpectedActive {
 					s.SrcPeerIP = srcPeerIP
 					s.DstPeerIP = dstPeerIP
 					s.SrcConnected = true
@@ -422,6 +479,13 @@ func (m *Manager) simulateDemoPeers(sheet config.EventSheet) {
 						s.DstLinkBWMbps = 44.0 + 3.5*math.Cos(elapsed/22.0+float64(pIdx))
 						s.SrcMaxBWMbps = 1000
 						s.DstMaxBWMbps = 1000
+						if idx%2 == 0 {
+							s.VideoFPS = 59.94
+						} else {
+							s.VideoFPS = 50
+						}
+						s.VideoResolution = "1920x1080"
+						s.VideoCodec = "H.264"
 					}
 					if grp.ID == "16mv-1" && leg.Role == "primary" {
 						s.SrcLost = 1
@@ -434,6 +498,7 @@ func (m *Manager) simulateDemoPeers(sheet config.EventSheet) {
 					Carrier:        leg.Carrier,
 					SrcDevice:      leg.SrcDevice,
 					DstDevice:      leg.DstDevice,
+					StreamDisabled: !grp.IsEnabled(),
 					ExpectedActive: grp.ExpectedActive,
 					PrevRestarts:   0,
 				}, m.cfg.Thresholds)

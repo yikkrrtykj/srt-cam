@@ -15,6 +15,7 @@ type ChannelContext struct {
 	Carrier        string
 	SrcDevice      string
 	DstDevice      string
+	StreamDisabled bool
 	ExpectedActive bool
 	PrevRestarts   int
 }
@@ -27,6 +28,9 @@ func DiagnoseChannel(
 	cctx ChannelContext,
 	th config.ThresholdConfig,
 ) (model.FaultCode, string, string) {
+	if cctx.StreamDisabled {
+		return model.FaultStreamStopped, "none", "已停止"
+	}
 	srcName := cctx.SrcDevice
 	if srcName == "" {
 		srcName = "发端"
@@ -195,6 +199,9 @@ func EvaluateSignalGroup(
 	grp config.SignalGroupConfig,
 	legs []model.LegLiveView,
 ) (model.GroupSeverity, string, string) {
+	if !grp.IsEnabled() {
+		return model.SeverityStopped, "已停止", ""
+	}
 	if !grp.ExpectedActive {
 		allHealthy := len(legs) > 0
 		for _, leg := range legs {

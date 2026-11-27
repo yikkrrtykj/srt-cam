@@ -296,5 +296,88 @@ func TestAPIAuthOverviewRestartAndEventSheet(t *testing.T) {
 	if recDup.Code != http.StatusBadRequest {
 		t.Fatalf("PUT duplicate primary roles = %d, want 400", recDup.Code)
 	}
+
+	// Stream power switch + live-stop safety guard + running edit lock
+	var powerOps []string
+	srv.SetPowerFunc(func(_ context.Context, cid string, start bool) error {
+		if start {
+			powerOps = append(powerOps, "start:"+cid)
+		} else {
+			powerOps = append(powerOps, "stop:"+cid)
+		}
+		return nil
+	})
+
+	// Make cam1 appear actively flowing (12.5 Mb/s) -> stopping without force must return 409
+	localFlowing := model.NodeLiveStatus{
+		NodeID: cfg.NodeID, DisplayName: cfg.DisplayName, Online: true,
+		Channels: map[string]model.ChannelSample{
+			"srt-cam1": {NodeID: cfg.NodeID, ChannelID: "srt-cam1", Mode: model.ModeSRTRelay, ProcessState: "running", SrcConnected: true, SrcMbps: 12.5, FaultCode: model.FaultHealthy},
+		},
+	}
+	srv.UpdateSnapshot(localFlowing, map[string]model.NodeLiveStatus{cfg.NodeID: localFlowing}, evStore.Get())
+
+	reqStopNoForce := httptest.NewRequest(http.MethodPatch, "/api/v1/signal-groups/cam1/enabled", bytes.NewBufferString(`{"enabled":false,"force":false}`))
+	reqStopNoForce.AddCookie(cookie)
+	recStopNoForce := httptest.NewRecorder()
+	handler.ServeHTTP(recStopNoForce, reqStopNoForce)
+	if recStopNoForce.Code != http.StatusConflict {
+		t.Fatalf("stop flowing stream without force = %d, want 409 (%s)", recStopNoForce.Code, recStopNoForce.Body.String())
+	}
+
+	// While cam1 is running, renaming is allowed but changing channel/port returns 409
+	curSheet := evStore.Get()
+	curSheet.SignalGroups[0].Name = "主机位 PGM"
+	renameBody, _ := json.Marshal(curSheet)
+	reqRename := httptest.NewRequest(http.MethodPut, "/api/v1/event-sheet", bytes.NewReader(renameBody))
+	reqRename.AddCookie(cookie)
+	recRename := httptest.NewRecorder()
+	handler.ServeHTTP(recRename, reqRename)
+	if recRename.Code != http.StatusOK {
+		t.Fatalf("rename running stream = %d, want 200 (%s)", recRename.Code, recRename.Body.String())
+	}
+
+	badLockSheet := evStore.Get()
+	badLockSheet.SignalGroups[0].Legs[0].InPort = 20099
+	badLockBody, _ := json.Marshal(badLockSheet)
+	reqBadLock := httptest.NewRequest(http.MethodPut, "/api/v1/event-sheet", bytes.NewReader(badLockBody))
+	reqBadLock.AddCookie(cookie)
+	recBadLock := httptest.NewRecorder()
+	handler.ServeHTTP(recBadLock, reqBadLock)
+	if recBadLock.Code != http.StatusConflict {
+		t.Fatalf("modify port on running stream = %d, want 409 (%s)", recBadLock.Code, recBadLock.Body.String())
+	}
+
+	// Stopping with force=true stops container and unlocks transport editing
+	reqStopForce := httptest.NewRequest(http.MethodPatch, "/api/v1/signal-groups/cam1/enabled", bytes.NewBufferString(`{"enabled":false,"force":true}`))
+	reqStopForce.AddCookie(cookie)
+	recStopForce := httptest.NewRecorder()
+	handler.ServeHTTP(recStopForce, reqStopForce)
+	if recStopForce.Code != http.StatusOK {
+		t.Fatalf("force stop stream = %d, want 200 (%s)", recStopForce.Code, recStopForce.Body.String())
+	}
+
+	unlockedSheet := evStore.Get()
+	unlockedSheet.SignalGroups[0].Legs[0].InPort = 20099
+	unlockedBody, _ := json.Marshal(unlockedSheet)
+	reqUnlocked := httptest.NewRequest(http.MethodPut, "/api/v1/event-sheet", bytes.NewReader(unlockedBody))
+	reqUnlocked.AddCookie(cookie)
+	recUnlocked := httptest.NewRecorder()
+	handler.ServeHTTP(recUnlocked, reqUnlocked)
+	if recUnlocked.Code != http.StatusOK {
+		t.Fatalf("modify port on stopped stream = %d, want 200 (%s)", recUnlocked.Code, recUnlocked.Body.String())
+	}
+
+	// Peer channel-power endpoint accepts Bearer cluster token
+	reqPeerPow := httptest.NewRequest(http.MethodPost, "/api/peer/channel-power", bytes.NewBufferString(`{"channel_id":"srt-cam1","action":"start","operator":"admin"}`))
+	reqPeerPow.Header.Set("Authorization", "Bearer peer-secret")
+	recPeerPow := httptest.NewRecorder()
+	handler.ServeHTTP(recPeerPow, reqPeerPow)
+	if recPeerPow.Code != http.StatusOK {
+		t.Fatalf("peer channel-power = %d, want 200 (%s)", recPeerPow.Code, recPeerPow.Body.String())
+	}
+	if len(powerOps) != 2 || powerOps[0] != "stop:srt-cam1" || powerOps[1] != "start:srt-cam1" {
+		t.Fatalf("unexpected powerOps: %+v", powerOps)
+	}
 }
 

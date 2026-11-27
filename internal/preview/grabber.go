@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,15 @@ import (
 	"github.com/yikkrrtykj/srt-cam/internal/config"
 	"github.com/yikkrrtykj/srt-cam/internal/model"
 )
+
+// VideoMeta holds lightweight stream format details parsed from ffmpeg's probe header during
+// keyframe thumbnail capture (zero extra decoding or network bandwidth).
+type VideoMeta struct {
+	FPS        float64
+	Resolution string
+	Codec      string
+	UpdatedAt  time.Time
+}
 
 // Snapshot holds one captured thumbnail image in memory.
 type Snapshot struct {
@@ -38,6 +49,7 @@ type Manager struct {
 	mu         sync.RWMutex
 	targets    map[string]config.PreviewTarget
 	cache      map[string]Snapshot
+	metaCache  map[string]VideoMeta
 	lastViewed map[string]time.Time
 	inFlight   map[string]bool
 	rootCtx    context.Context
@@ -67,6 +79,7 @@ func NewManager(targets []config.PreviewTarget) *Manager {
 		sem:         make(chan struct{}, 2),
 		targets:     all,
 		cache:       make(map[string]Snapshot),
+		metaCache:   make(map[string]VideoMeta),
 		lastViewed:  make(map[string]time.Time),
 		inFlight:    make(map[string]bool),
 		rootCtx:     context.Background(),
@@ -157,6 +170,21 @@ func (m *Manager) Snapshot(channelID string, maxAge time.Duration) (Snapshot, bo
 	return snap, true
 }
 
+// VideoMeta returns the most recent parsed stream format metadata (FPS, resolution, codec)
+// captured alongside keyframe thumbnails within maxAge.
+func (m *Manager) VideoMeta(channelID string, maxAge time.Duration) (VideoMeta, bool) {
+	if maxAge <= 0 {
+		maxAge = 35 * time.Second
+	}
+	m.mu.RLock()
+	meta, ok := m.metaCache[channelID]
+	m.mu.RUnlock()
+	if !ok || (meta.FPS <= 0 && meta.Resolution == "") || time.Since(meta.UpdatedAt) > maxAge {
+		return VideoMeta{}, false
+	}
+	return meta, true
+}
+
 func (m *Manager) scheduleDue(ctx context.Context, now time.Time) {
 	m.mu.Lock()
 	var due []config.PreviewTarget
@@ -197,6 +225,7 @@ func (m *Manager) captureAsync(ctx context.Context, t config.PreviewTarget) {
 func (m *Manager) captureOnce(ctx context.Context, t config.PreviewTarget) {
 	var data []byte
 	var ct string
+	var meta VideoMeta
 	var err error
 
 	rawURL := strings.TrimSpace(t.InputURL)
@@ -209,22 +238,27 @@ func (m *Manager) captureOnce(ctx context.Context, t config.PreviewTarget) {
 		if !m.isLocalTapFlowing(ctx, rawURL) {
 			return
 		}
-		data, ct, err = m.grabFFmpegKeyframe(ctx, rawURL, true)
+		data, ct, meta, err = m.grabFFmpegKeyframe(ctx, rawURL, true)
 	case strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://"):
-		data, ct, err = m.fetchHTTPSnapshot(ctx, rawURL)
+		data, ct, meta, err = m.fetchHTTPSnapshot(ctx, rawURL)
 	default:
 		isTS := strings.HasPrefix(lower, "udp://") || strings.HasPrefix(lower, "srt://")
-		data, ct, err = m.grabFFmpegKeyframe(ctx, rawURL, isTS)
+		data, ct, meta, err = m.grabFFmpegKeyframe(ctx, rawURL, isTS)
 	}
 
 	if err != nil || len(data) == 0 {
 		return
 	}
+	now := time.Now()
 	m.mu.Lock()
 	m.cache[t.ChannelID] = Snapshot{
 		Data:        data,
 		ContentType: ct,
-		UpdatedAt:   time.Now(),
+		UpdatedAt:   now,
+	}
+	if meta.FPS > 0 || meta.Resolution != "" || meta.Codec != "" {
+		meta.UpdatedAt = now
+		m.metaCache[t.ChannelID] = meta
 	}
 	m.mu.Unlock()
 }
@@ -265,18 +299,18 @@ func (m *Manager) isLocalTapFlowing(ctx context.Context, tsURL string) bool {
 	return payload.Flowing
 }
 
-func (m *Manager) fetchHTTPSnapshot(ctx context.Context, urlStr string) ([]byte, string, error) {
+func (m *Manager) fetchHTTPSnapshot(ctx context.Context, urlStr string) ([]byte, string, VideoMeta, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", VideoMeta{}, err
 	}
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		return nil, "", err
+		return nil, "", VideoMeta{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, "", VideoMeta{}, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	ct := resp.Header.Get("Content-Type")
 	if strings.HasPrefix(strings.ToLower(ct), "video/") {
@@ -286,20 +320,20 @@ func (m *Manager) fetchHTTPSnapshot(ctx context.Context, urlStr string) ([]byte,
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return nil, "", err
+		return nil, "", VideoMeta{}, err
 	}
 	if ct == "" {
 		ct = http.DetectContentType(data)
 	}
 	if !strings.HasPrefix(ct, "image/") {
-		return nil, "", fmt.Errorf("unexpected content-type %q", ct)
+		return nil, "", VideoMeta{}, fmt.Errorf("unexpected content-type %q", ct)
 	}
-	return data, ct, nil
+	return data, ct, VideoMeta{}, nil
 }
 
-func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string, forceMPEGTS bool) ([]byte, string, error) {
+func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string, forceMPEGTS bool) ([]byte, string, VideoMeta, error) {
 	if m.ffmpegPath == "" {
-		return nil, "", fmt.Errorf("ffmpeg not installed")
+		return nil, "", VideoMeta{}, fmt.Errorf("ffmpeg not installed")
 	}
 
 	// Acquire concurrency slot (max 2 simultaneous ffmpeg grabs) so small VPS CPUs stay safe.
@@ -307,7 +341,7 @@ func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string, force
 	case m.sem <- struct{}{}:
 		defer func() { <-m.sem }()
 	case <-ctx.Done():
-		return nil, "", ctx.Err()
+		return nil, "", VideoMeta{}, ctx.Err()
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, 6*time.Second)
@@ -315,9 +349,10 @@ func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string, force
 
 	// Strictly grab 1 keyframe (-skip_frame nokey -frames:v 1), no audio/subtitle decode,
 	// bounded probe size and scaled to 320x180 JPEG so CPU usage stays negligible on relay hosts.
+	// -loglevel info prints the probed video header (codec, resolution, fps) on stderr at zero extra cost.
 	args := []string{
 		"-nostdin",
-		"-loglevel", "error",
+		"-loglevel", "info",
 		"-fflags", "nobuffer+discardcorrupt",
 		"-flags", "low_delay",
 		"-probesize", "2000000",
@@ -340,11 +375,59 @@ func (m *Manager) grabFFmpegKeyframe(ctx context.Context, inputURL string, force
 
 	cmd := exec.CommandContext(cctx, m.ffmpegPath, args...)
 	var out bytes.Buffer
+	var stderr bytes.Buffer
 	cmd.Stdout = &out
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, "", err
+		return nil, "", VideoMeta{}, err
 	}
-	return out.Bytes(), "image/jpeg", nil
+	meta := ParseFFmpegVideoMeta(stderr.String())
+	return out.Bytes(), "image/jpeg", meta, nil
+}
+
+var (
+	reVideoCodec = regexp.MustCompile(`(?i)Stream\s+#\d+:\d+[^:]*:\s*Video:\s*([a-z0-9_]+)`)
+	reVideoRes   = regexp.MustCompile(`\b(\d{3,4}x\d{3,4})\b`)
+	reVideoFPS   = regexp.MustCompile(`\b(\d+(?:\.\d+)?)\s+fps\b`)
+	reVideoTBR   = regexp.MustCompile(`\b(\d+(?:\.\d+)?)\s+tbr\b`)
+)
+
+// ParseFFmpegVideoMeta extracts codec, resolution, and frame rate from ffmpeg's Input #0 stderr line.
+func ParseFFmpegVideoMeta(stderr string) VideoMeta {
+	for _, line := range strings.Split(stderr, "\n") {
+		if !strings.Contains(line, "Video:") || !strings.Contains(line, "Stream #0:") {
+			continue
+		}
+		var meta VideoMeta
+		if m := reVideoCodec.FindStringSubmatch(line); len(m) > 1 {
+			switch strings.ToLower(m[1]) {
+			case "h264":
+				meta.Codec = "H.264"
+			case "hevc", "h265":
+				meta.Codec = "HEVC"
+			case "mpeg2video":
+				meta.Codec = "MPEG-2"
+			default:
+				meta.Codec = strings.ToUpper(m[1])
+			}
+		}
+		if m := reVideoRes.FindStringSubmatch(line); len(m) > 1 {
+			meta.Resolution = m[1]
+		}
+		fpsStr := ""
+		if m := reVideoFPS.FindStringSubmatch(line); len(m) > 1 {
+			fpsStr = m[1]
+		} else if m := reVideoTBR.FindStringSubmatch(line); len(m) > 1 {
+			fpsStr = m[1]
+		}
+		if fpsStr != "" {
+			if v, err := strconv.ParseFloat(fpsStr, 64); err == nil && v >= 1 && v <= 240 {
+				meta.FPS = v
+			}
+		}
+		return meta
+	}
+	return VideoMeta{}
 }
 
 // RenderDemoMonitorSVG renders a clean 16:9 broadcast monitor thumbnail for --demo mode
@@ -358,11 +441,14 @@ func RenderDemoMonitorSVG(label string, sample model.ChannelSample, now time.Tim
 	tc := now.Format("15:04:05")
 	sec := now.Second()
 
-	// 1. Offline / Standby -> SMPTE broadcast color bars + NO SIGNAL badge
-	if !sample.SrcConnected || sample.SrcMbps < 0.1 {
+	// 1. Stopped / Offline / Standby -> SMPTE broadcast color bars + clear status badge
+	if sample.FaultCode == model.FaultStreamStopped || !sample.SrcConnected || sample.SrcMbps < 0.1 {
 		statusText := "NO SIGNAL"
 		accent := "#f85149"
-		if sample.FaultCode == model.FaultIdleExpectedOff {
+		if sample.FaultCode == model.FaultStreamStopped {
+			statusText = "STOPPED"
+			accent = "#525a69"
+		} else if sample.FaultCode == model.FaultIdleExpectedOff {
 			statusText = "STANDBY"
 			accent = "#8b949e"
 		}

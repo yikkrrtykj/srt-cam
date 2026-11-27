@@ -1,18 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  ArrowUpRight,
   Check,
   Copy,
   LayoutGrid,
+  Lock,
+  Maximize2,
+  Minimize2,
   PanelLeft,
   RefreshCw,
   RotateCcw,
   Search,
-  SlidersHorizontal,
+  Unlock,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { LegLiveView, OverviewResponse, SignalGroupLiveView } from "@/types";
 import {
   api,
+  channelLossSummary,
+  formatVideoFps,
   groupStatusMeta,
   legTone,
   redundancyText,
@@ -23,6 +29,7 @@ import { TelemetryChartsAndStats } from "@/components/TelemetryChartsAndStats";
 import { DiagnosisPanel } from "@/components/DiagnosisPanel";
 import { ChannelLogsPanel } from "@/components/ChannelLogsPanel";
 import { SafeRestartModal } from "@/components/SafeRestartModal";
+import { StopStreamDialog } from "@/components/StopStreamDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -52,17 +59,22 @@ function loadViewMode(): ViewMode {
   } catch {
     // ignore storage errors
   }
-  return "workbench";
+  return "multiviewer";
 }
 
-function primaryLegOf(g: SignalGroupLiveView): LegLiveView | undefined {
-  return g.legs[0];
+function displayLegOf(g: SignalGroupLiveView): LegLiveView | undefined {
+  if (g.legs.length <= 1) return g.legs[0];
+  return g.legs.find((l) => l.node_online && l.sample.src_mbps >= 0.1) ?? g.legs[0];
 }
 
-function totalDropsOf(leg?: LegLiveView): number {
-  if (!leg) return 0;
-  const s = leg.sample;
-  return leg.mode === "udp-passthrough" ? s.src_dropped : s.src_dropped + s.dst_dropped;
+function maxLiveFlowOf(g: SignalGroupLiveView): number {
+  let max = 0;
+  for (const leg of g.legs) {
+    if (leg.node_online && leg.sample.src_mbps > max) {
+      max = leg.sample.src_mbps;
+    }
+  }
+  return max;
 }
 
 export function MonitorPage({
@@ -80,7 +92,14 @@ export function MonitorPage({
   const [search, setSearch] = useState("");
   const [legIdx, setLegIdx] = useState(0);
   const [busyToggleId, setBusyToggleId] = useState<string | null>(null);
+  const [powerBusyId, setPowerBusyId] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [copiedKey, setCopiedKey] = useState("");
+  const [stopConfirm, setStopConfirm] = useState<{
+    groupId: string;
+    signalName: string;
+    activeMbps: number;
+  } | null>(null);
   const [restartTarget, setRestartTarget] = useState<{
     nodeId: string;
     nodeName: string;
@@ -100,11 +119,18 @@ export function MonitorPage({
     }
   }, [viewMode]);
 
+  useEffect(() => {
+    function onFsChange() {
+      setIsFullscreen(!!document.fullscreenElement);
+    }
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
   const hasVenueToHub = overview.groups.some((g) => g.direction === "venue_to_hub");
   const hasHubToVenue = overview.groups.some((g) => g.direction === "hub_to_venue");
   const hasMultipleDirections = hasVenueToHub && hasHubToVenue;
 
-  // Reset direction filter if signals no longer span both directions
   useEffect(() => {
     if (!hasMultipleDirections && (filter === "venue_to_hub" || filter === "hub_to_venue")) {
       setFilter("all");
@@ -114,15 +140,20 @@ export function MonitorPage({
   const alertGroupsCount = useMemo(
     () =>
       overview.groups.filter(
-        (g) => g.expected_active && g.severity !== "HEALTHY" && g.severity !== "IDLE"
+        (g) =>
+          g.enabled &&
+          g.expected_active &&
+          g.severity !== "HEALTHY" &&
+          g.severity !== "IDLE" &&
+          g.severity !== "STOPPED"
       ).length,
     [overview.groups]
   );
 
   const onlineGroupsCount = useMemo(
     () =>
-      overview.groups.filter((g) =>
-        g.legs.some((l) => l.node_online && l.sample.src_mbps >= 0.1)
+      overview.groups.filter(
+        (g) => g.enabled && g.legs.some((l) => l.node_online && l.sample.src_mbps >= 0.1)
       ).length,
     [overview.groups]
   );
@@ -131,7 +162,17 @@ export function MonitorPage({
     const kw = search.trim().toLowerCase();
     return overview.groups.filter((g) => {
       if (filter === "alerts") {
-        if (!(g.expected_active && g.severity !== "HEALTHY" && g.severity !== "IDLE")) return false;
+        if (
+          !(
+            g.enabled &&
+            g.expected_active &&
+            g.severity !== "HEALTHY" &&
+            g.severity !== "IDLE" &&
+            g.severity !== "STOPPED"
+          )
+        ) {
+          return false;
+        }
       } else if (filter === "venue_to_hub" || filter === "hub_to_venue") {
         if (g.direction !== filter) return false;
       }
@@ -192,12 +233,63 @@ export function MonitorPage({
     setBusyToggleId(g.id);
     try {
       await api.toggleExpectedActive(g.id, checked);
-      toast.success(`${g.name} 已${checked ? "开启断流告警" : "设为待机（关闭告警）"}`);
+      toast.success(`${g.name} 已${checked ? "开启断流告警" : "关闭断流告警"}`);
       onRefresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "切换告警状态失败");
     } finally {
       setBusyToggleId(null);
+    }
+  }
+
+  async function executePowerChange(groupId: string, signalName: string, enable: boolean, force = false) {
+    setPowerBusyId(groupId);
+    try {
+      await api.setSignalGroupEnabled(groupId, enable, force);
+      setStopConfirm(null);
+      toast.success(
+        enable
+          ? `已启动「${signalName}」，传输参数已锁定`
+          : `已停止「${signalName}」，传输参数已解锁`
+      );
+      onRefresh();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "切换流开关失败";
+      if (!enable && !force && msg.includes("二次确认")) {
+        const g = overview.groups.find((item) => item.id === groupId);
+        setStopConfirm({
+          groupId,
+          signalName,
+          activeMbps: g ? Math.max(maxLiveFlowOf(g), 0.1) : 0.1,
+        });
+      } else {
+        toast.error(msg);
+      }
+    } finally {
+      setPowerBusyId(null);
+    }
+  }
+
+  function handleTogglePower(g: SignalGroupLiveView, nextEnable: boolean) {
+    if (!nextEnable) {
+      const mbps = maxLiveFlowOf(g);
+      if (mbps >= 0.1) {
+        setStopConfirm({ groupId: g.id, signalName: g.name, activeMbps: mbps });
+        return;
+      }
+    }
+    void executePowerChange(g.id, g.name, nextEnable, false);
+  }
+
+  async function toggleFullscreen() {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch {
+      toast.error("当前浏览器不支持全屏模式");
     }
   }
 
@@ -210,6 +302,12 @@ export function MonitorPage({
     } else {
       toast.error("复制失败");
     }
+  }
+
+  function openInWorkbench(groupId: string) {
+    onSelectGroupId(groupId);
+    setSubTab("realtime");
+    setViewMode("workbench");
   }
 
   // Fullscreen evidence snapshot mode
@@ -241,41 +339,30 @@ export function MonitorPage({
       ? activeGroup.legs[legIdx < activeGroup.legs.length ? legIdx : 0]
       : undefined;
   const activeStatus = activeGroup ? groupStatusMeta(activeGroup) : null;
+  const activeFps = formatVideoFps(activeLeg);
+  const activeLoss = channelLossSummary(activeLeg);
   const isPass = activeLeg?.mode === "udp-passthrough";
   const hostAddr = activeLeg ? resolveNodeHost(overview.nodes, activeLeg.node_id) : "";
   const pushUrl = activeLeg ? `srt://${hostAddr}:${activeLeg.in_port}` : "";
   const pullUrl = activeLeg && !isPass ? `srt://${hostAddr}:${activeLeg.out_port}` : "";
 
-  // Responsive Multiviewer Grid columns tuned to signal count
+  // Full-width responsive Multiviewer Grid columns tuned to signal count
   const wallGridCols =
     filtered.length <= 1
-      ? "grid-cols-1 max-w-[780px]"
+      ? "grid-cols-1 max-w-[960px] mx-auto"
       : filtered.length <= 4
       ? "grid-cols-1 sm:grid-cols-2"
       : filtered.length <= 9
       ? "grid-cols-1 sm:grid-cols-2 xl:grid-cols-3"
-      : "grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4";
+      : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4";
 
   return (
     <div className="flex flex-col h-[calc(100vh-48px)] overflow-hidden">
       {/* Compact Broadcast Control Toolbar */}
       <div className="shrink-0 flex flex-wrap items-center justify-between gap-2.5 border-b border-[#1E222B] bg-[#0E1014] px-4 py-2">
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* View Mode Toggle: Workbench (Option B) vs Multiviewer (Option A) */}
+          {/* View Mode Toggle: Multiviewer Wall vs Workbench */}
           <div className="inline-flex items-center rounded-md border border-[#232730] bg-[#0A0B0D] p-0.5">
-            <button
-              type="button"
-              onClick={() => setViewMode("workbench")}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-[4px] px-2.5 py-1 text-[11.5px] font-medium transition-colors cursor-pointer",
-                viewMode === "workbench"
-                  ? "bg-[#222630] text-[#F1F3F6]"
-                  : "text-[#7C8596] hover:text-[#D1D7E2]"
-              )}
-            >
-              <PanelLeft className="h-3.5 w-3.5" />
-              工作台
-            </button>
             <button
               type="button"
               onClick={() => setViewMode("multiviewer")}
@@ -288,6 +375,19 @@ export function MonitorPage({
             >
               <LayoutGrid className="h-3.5 w-3.5" />
               多画面墙
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("workbench")}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-[4px] px-2.5 py-1 text-[11.5px] font-medium transition-colors cursor-pointer",
+                viewMode === "workbench"
+                  ? "bg-[#222630] text-[#F1F3F6]"
+                  : "text-[#7C8596] hover:text-[#D1D7E2]"
+              )}
+            >
+              <PanelLeft className="h-3.5 w-3.5" />
+              工作台
             </button>
           </div>
 
@@ -325,7 +425,7 @@ export function MonitorPage({
           </div>
         </div>
 
-        {/* Right: Search + Status Summary + Refresh */}
+        {/* Right: Search + Status Summary + Fullscreen (wall) + Refresh */}
         <div className="flex items-center gap-2.5">
           <div className="hidden md:flex items-center gap-3 text-[11.5px] text-[#7C8596] tabular">
             <span>
@@ -342,6 +442,27 @@ export function MonitorPage({
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
+
+          {viewMode === "multiviewer" && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => void toggleFullscreen()}
+                  aria-label="切换全屏监看"
+                >
+                  {isFullscreen ? (
+                    <Minimize2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <Maximize2 className="h-3.5 w-3.5" />
+                  )}
+                  <span className="hidden sm:inline">{isFullscreen ? "退出全屏" : "全屏监看"}</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>切换全屏大屏监看模式（适合副屏/电视墙）</TooltipContent>
+            </Tooltip>
+          )}
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -366,7 +487,7 @@ export function MonitorPage({
         </div>
       ) : viewMode === "workbench" ? (
         /* ================================================================
-           OPTION B: SWISS PRECISION MASTER-DETAIL WORKBENCH (DEFAULT)
+           WORKBENCH: MASTER-DETAIL DIAGNOSTICS & LIVE TELEMETRY
            ================================================================ */
         <div className="flex-1 flex min-h-0 overflow-hidden">
           {/* Left Signal List Sidebar */}
@@ -380,11 +501,12 @@ export function MonitorPage({
                 <div className="py-8 text-center text-[12px] text-[#6B7485]">无匹配信号</div>
               ) : (
                 filtered.map((g) => {
-                  const leg = primaryLegOf(g);
+                  const leg = displayLegOf(g);
                   const st = groupStatusMeta(g);
                   const selected = activeGroup?.id === g.id;
                   const s = leg?.sample;
-                  const isFlowing = !!leg?.node_online && (s?.src_mbps ?? 0) >= 0.1;
+                  const isFlowing = g.enabled && !!leg?.node_online && (s?.src_mbps ?? 0) >= 0.1;
+                  const fps = formatVideoFps(leg);
                   return (
                     <button
                       key={g.id}
@@ -414,6 +536,7 @@ export function MonitorPage({
                           {isFlowing && s ? (
                             <>
                               {s.src_mbps.toFixed(1)} Mb/s
+                              {fps.text !== "-" && fps.text !== "探测中" ? ` · ${fps.text}` : ""}
                               {leg.mode !== "udp-passthrough" && s.src_rtt_ms > 0
                                 ? ` · ${s.src_rtt_ms.toFixed(0)}ms`
                                 : ""}
@@ -434,7 +557,7 @@ export function MonitorPage({
           <div className="flex-1 min-w-0 overflow-y-auto p-4 lg:p-5 space-y-4 bg-[#0A0B0D]">
             {activeGroup && activeLeg && activeStatus && (
               <>
-                {/* Signal Focus Header Card (Matches Option B Mockup) */}
+                {/* Signal Focus Header Card */}
                 <div className="rounded-lg border border-[#232730] bg-[#111316] overflow-hidden">
                   <div className="p-4 flex flex-col lg:flex-row lg:items-center gap-4">
                     {/* 16:9 Preview Monitor */}
@@ -462,7 +585,44 @@ export function MonitorPage({
                           )}
                         </div>
 
-                        <div className="flex items-center gap-3">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <label
+                                className={cn(
+                                  "inline-flex items-center gap-2 rounded-md border px-2 py-0.5 text-[11.5px] font-medium cursor-pointer select-none",
+                                  activeGroup.enabled
+                                    ? "border-[#1E4631] bg-[#0F241A] text-[#4ADE80]"
+                                    : "border-[#2B313D] bg-[#101318] text-[#8B94A5]"
+                                )}
+                              >
+                                <Switch
+                                  checked={activeGroup.enabled}
+                                  disabled={powerBusyId === activeGroup.id}
+                                  onCheckedChange={(checked) =>
+                                    handleTogglePower(activeGroup, checked)
+                                  }
+                                />
+                                {activeGroup.enabled ? (
+                                  <span className="inline-flex items-center gap-1">
+                                    <Lock className="h-3 w-3" />
+                                    流开关
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1">
+                                    <Unlock className="h-3 w-3" />
+                                    已停止
+                                  </span>
+                                )}
+                              </label>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {activeGroup.enabled
+                                ? "通道运行中并锁定传输参数，关闭将停止底层转发容器"
+                                : "通道已停止，开启将启动底层转发容器并锁定传输参数"}
+                            </TooltipContent>
+                          </Tooltip>
+
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <label className="inline-flex items-center gap-2 text-[12px] text-[#B8C0CE] cursor-pointer select-none">
@@ -483,8 +643,8 @@ export function MonitorPage({
                         </div>
                       </div>
 
-                      {/* 4 Clean Hardware KPI Readouts */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      {/* 5 Clean Hardware KPI Readouts */}
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                         <KpiCell
                           label="入站码率"
                           value={activeLeg.sample.src_mbps.toFixed(1)}
@@ -496,6 +656,23 @@ export function MonitorPage({
                           unit="Mb/s"
                         />
                         <KpiCell
+                          label="视频帧率"
+                          value={activeFps.text}
+                          title={activeFps.tooltip}
+                        />
+                        <KpiCell
+                          label="丢包率"
+                          value={activeLoss.text}
+                          tone={
+                            activeLoss.tone === "crit"
+                              ? "crit"
+                              : activeLoss.tone === "warn"
+                              ? "warn"
+                              : "neutral"
+                          }
+                          title={activeLoss.detail}
+                        />
+                        <KpiCell
                           label="往返时延"
                           value={
                             !isPass && activeLeg.sample.src_rtt_ms > 0
@@ -503,11 +680,6 @@ export function MonitorPage({
                               : "-"
                           }
                           unit={!isPass && activeLeg.sample.src_rtt_ms > 0 ? "ms" : ""}
-                        />
-                        <KpiCell
-                          label="未恢复弃包"
-                          value={String(totalDropsOf(activeLeg))}
-                          tone={totalDropsOf(activeLeg) > 0 ? "crit" : "neutral"}
                         />
                       </div>
 
@@ -585,6 +757,7 @@ export function MonitorPage({
                       <Button
                         variant="outline"
                         size="xs"
+                        disabled={!activeGroup.enabled}
                         onClick={() =>
                           setRestartTarget({
                             nodeId: activeLeg.node_id,
@@ -634,158 +807,163 @@ export function MonitorPage({
         </div>
       ) : (
         /* ================================================================
-           OPTION A: BROADCAST MULTIVIEWER WALL + RIGHT DOCKED INSPECTOR
+           FULL-WIDTH BROADCAST MULTIVIEWER WALL (OBS-STYLE CRISP TELEMETRY)
            ================================================================ */
-        <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden bg-[#0A0B0D]">
-          {/* Left Multiviewer Wall */}
-          <div className="flex-1 min-w-0 overflow-y-auto p-3.5">
-            {filtered.length === 0 ? (
-              <div className="py-12 text-center text-[12.5px] text-[#6B7485]">无匹配信号</div>
-            ) : (
-              <div className={cn("grid gap-2.5", wallGridCols)}>
-                {filtered.map((g) => {
-                  const leg = primaryLegOf(g);
-                  const st = groupStatusMeta(g);
-                  const selected = activeGroup?.id === g.id;
-                  const s = leg?.sample;
-                  const drops = totalDropsOf(leg);
-                  return (
-                    <button
-                      key={g.id}
-                      type="button"
-                      onClick={() => onSelectGroupId(g.id)}
-                      className={cn(
-                        "group flex flex-col overflow-hidden rounded-md bg-[#111316] text-left transition-all cursor-pointer border",
-                        selected
-                          ? "border-[#E4E7EC] ring-1 ring-[#E4E7EC]/60"
-                          : "border-[#232730] hover:border-[#3A4150]"
-                      )}
-                    >
+        <div className="flex-1 min-h-0 overflow-y-auto p-3.5 lg:p-4 bg-[#0A0B0D]">
+          {filtered.length === 0 ? (
+            <div className="py-12 text-center text-[12.5px] text-[#6B7485]">无匹配信号</div>
+          ) : (
+            <div className={cn("grid gap-3", wallGridCols)}>
+              {filtered.map((g) => {
+                const leg = displayLegOf(g);
+                const st = groupStatusMeta(g);
+                const selected = activeGroup?.id === g.id;
+                const s = leg?.sample;
+                const flowing = g.enabled && !!leg?.node_online && (s?.src_mbps ?? 0) >= 0.1;
+                const fps = formatVideoFps(leg);
+                const loss = channelLossSummary(leg);
+                const rttText =
+                  flowing && leg && leg.mode !== "udp-passthrough" && s && s.src_rtt_ms > 0
+                    ? `${s.src_rtt_ms.toFixed(0)} ms`
+                    : "-";
+                const borderTone =
+                  st.tone === "crit"
+                    ? "border-[#5E2326]"
+                    : st.tone === "warn"
+                    ? "border-[#4D3B16]"
+                    : selected
+                    ? "border-[#D8DDE6] ring-1 ring-[#D8DDE6]/40"
+                    : "border-[#232730] hover:border-[#3A4150]";
+
+                return (
+                  <div
+                    key={g.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSelectGroupId(g.id)}
+                    onDoubleClick={() => openInWorkbench(g.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") openInWorkbench(g.id);
+                    }}
+                    className={cn(
+                      "group flex flex-col overflow-hidden rounded-md bg-[#111316] text-left transition-all cursor-pointer border select-none",
+                      borderTone
+                    )}
+                  >
+                    {/* 16:9 Live Preview Monitor */}
+                    <div className="relative">
                       {leg && <RouteThumbnail leg={leg} label={g.name} variant="wall" />}
-                      {/* Broadcast UMD Strip */}
-                      <div className="flex items-center justify-between gap-2 border-t border-[#1E222B] bg-[#121419] px-2.5 py-1.5">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <TallyDot tone={st.tone} />
-                          <span className="truncate text-[12px] font-medium text-[#F1F3F6]">
-                            {g.name}
-                          </span>
-                        </div>
-                        <div className="tabular flex items-center gap-2.5 shrink-0 text-[11px] text-[#98A1B0]">
-                          <span>{s ? `${s.src_mbps.toFixed(1)} Mb/s` : "-"}</span>
-                          {leg?.mode !== "udp-passthrough" && (
-                            <span>{s && s.src_rtt_ms > 0 ? `${s.src_rtt_ms.toFixed(0)} ms` : "-"}</span>
-                          )}
-                          <span className={drops > 0 ? "text-[#F87171] font-medium" : "text-[#7C8596]"}>
-                            {drops} 弃包
-                          </span>
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                      {g.legs.length >= 2 && leg && leg !== g.legs[0] && (
+                        <span className="absolute right-2 top-2 rounded bg-[#0A0B0D]/80 border border-[#3A4150] px-1.5 py-0.5 text-[10px] font-medium text-[#FBBF24]">
+                          备路画面
+                        </span>
+                      )}
+                    </div>
 
-          {/* Right Docked Precision Inspector (Matches Option A Mockup) */}
-          {activeGroup && activeLeg && activeStatus && (
-            <aside className="w-full lg:w-[376px] xl:w-[404px] shrink-0 border-t lg:border-t-0 lg:border-l border-[#1E222B] bg-[#111316] flex flex-col min-h-0">
-              <div className="shrink-0 flex items-center justify-between gap-2 border-b border-[#1E222B] px-4 py-3">
-                <div className="flex items-center gap-2 min-w-0">
-                  <TallyDot tone={activeStatus.tone} />
-                  <h2 className="truncate text-[14px] font-semibold text-[#F1F3F6]">
-                    {activeGroup.name}
-                  </h2>
-                  <StatusBadge tone={activeStatus.tone}>{activeStatus.label}</StatusBadge>
-                </div>
-
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        onClick={() => {
-                          setSubTab("diagnosis");
-                          setViewMode("workbench");
-                        }}
-                      >
-                        <SlidersHorizontal className="h-3.5 w-3.5" />
-                        趋势
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>切换到工作台查看历史趋势与通信记录</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={() =>
-                          setRestartTarget({
-                            nodeId: activeLeg.node_id,
-                            nodeName: activeLeg.node_name,
-                            channelId: activeLeg.channel_id,
-                            signalName: activeGroup.name,
-                          })
-                        }
-                        aria-label="重置通道"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>重置当前信号通道</TooltipContent>
-                  </Tooltip>
-                </div>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-4 space-y-3.5">
-                {/* Dual-leg switcher + Alarm toggle row */}
-                <div className="flex items-center justify-between gap-2">
-                  {activeGroup.legs.length >= 2 ? (
-                    <div className="inline-flex items-center rounded-md border border-[#232730] bg-[#0B0D10] p-0.5">
-                      {activeGroup.legs.map((leg, i) => (
-                        <button
-                          key={`${leg.node_id}-${leg.channel_id}`}
-                          type="button"
-                          onClick={() => setLegIdx(i)}
+                    {/* Row 1: Broadcast UMD Title + Dual-Leg Tally + Detail Jump */}
+                    <div className="flex items-center justify-between gap-2 border-t border-[#1E222B] bg-[#13161C] px-3 py-1.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <TallyDot tone={st.tone} />
+                        <span className="truncate text-[12.5px] font-semibold text-[#F1F3F6]">
+                          {g.name}
+                        </span>
+                        <span
                           className={cn(
-                            "inline-flex items-center gap-1.5 rounded-[4px] px-2 py-0.5 text-[11px] font-medium cursor-pointer",
-                            legIdx === i
-                              ? "bg-[#222630] text-[#F1F3F6]"
-                              : "text-[#7C8596] hover:text-[#D1D7E2]"
+                            "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                            st.tone === "ok"
+                              ? "bg-[#112B1E] text-[#4ADE80]"
+                              : st.tone === "warn"
+                              ? "bg-[#2C210E] text-[#FBBF24]"
+                              : st.tone === "crit"
+                              ? "bg-[#311316] text-[#F87171]"
+                              : "bg-[#1A1D24] text-[#7C8596]"
                           )}
                         >
-                          <TallyDot tone={legTone(leg)} className="h-1.5 w-1.5" />
-                          {leg.role === "primary" ? "主路" : "备路"}
-                        </button>
-                      ))}
+                          {st.label}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {g.legs.length >= 2 && (
+                          <div className="inline-flex items-center gap-1.5 text-[10.5px] text-[#8B94A5]">
+                            {g.legs.map((l, idx) => (
+                              <span
+                                key={`${l.node_id}-${l.channel_id}-${idx}`}
+                                className="inline-flex items-center gap-1 rounded bg-[#0E1015] border border-[#232730] px-1.5 py-0.5"
+                              >
+                                <TallyDot tone={legTone(l)} className="h-1.5 w-1.5" />
+                                {l.role === "backup" ? "备" : "主"}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openInWorkbench(g.id);
+                              }}
+                              className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] text-[#7C8596] hover:bg-[#1F2430] hover:text-[#F1F3F6] transition-colors cursor-pointer"
+                            >
+                              详情
+                              <ArrowUpRight className="h-3 w-3" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>打开工作台查看曲线、四层排障与日志（也可双击画面）</TooltipContent>
+                        </Tooltip>
+                      </div>
                     </div>
-                  ) : (
-                    <span className="tabular text-[11.5px] text-[#7C8596]">
-                      {activeLeg.node_id} / {activeLeg.channel_id}
-                    </span>
-                  )}
 
-                  <label className="inline-flex items-center gap-2 text-[11.5px] text-[#B8C0CE] cursor-pointer select-none">
-                    <Switch
-                      checked={activeGroup.expected_active}
-                      disabled={busyToggleId === activeGroup.id}
-                      onCheckedChange={(checked) => void handleToggleAlarm(activeGroup, checked)}
-                    />
-                    断流告警
-                  </label>
-                </div>
-
-                <TelemetryChartsAndStats
-                  group={activeGroup}
-                  nodes={overview.nodes}
-                  legIdx={legIdx}
-                  layout="inspector"
-                />
-              </div>
-            </aside>
+                    {/* Row 2: OBS-Style Crisp 4-Column Telemetry Strip (码率 / 帧率 / 丢包率 / 时延) */}
+                    <div className="grid grid-cols-4 divide-x divide-[#1C2029] border-t border-[#1A1E26] bg-[#0D0F13]">
+                      <WallMetricCell
+                        label="码率"
+                        value={s ? `${s.src_mbps.toFixed(1)} Mb/s` : "-"}
+                        tone={flowing ? "active" : "idle"}
+                      />
+                      <WallMetricCell
+                        label="帧率"
+                        value={fps.text}
+                        tone={
+                          fps.text !== "-" && fps.text !== "探测中"
+                            ? "active"
+                            : "idle"
+                        }
+                        tooltip={fps.tooltip}
+                      />
+                      <WallMetricCell
+                        label="丢包率"
+                        value={loss.text}
+                        tone={
+                          loss.tone === "crit"
+                            ? "crit"
+                            : loss.tone === "warn"
+                            ? "warn"
+                            : flowing
+                            ? "ok"
+                            : "idle"
+                        }
+                        tooltip={loss.detail}
+                      />
+                      <WallMetricCell
+                        label="时延"
+                        value={rttText}
+                        tone={
+                          flowing && s && s.src_rtt_ms >= 250
+                            ? "warn"
+                            : flowing
+                            ? "active"
+                            : "idle"
+                        }
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}
@@ -800,7 +978,60 @@ export function MonitorPage({
           }}
         />
       )}
+
+      <StopStreamDialog
+        open={!!stopConfirm}
+        signalName={stopConfirm?.signalName ?? ""}
+        activeMbps={stopConfirm?.activeMbps ?? 0}
+        busy={!!stopConfirm && powerBusyId === stopConfirm.groupId}
+        onCancel={() => setStopConfirm(null)}
+        onConfirm={() => {
+          if (stopConfirm) {
+            void executePowerChange(stopConfirm.groupId, stopConfirm.signalName, false, true);
+          }
+        }}
+      />
     </div>
+  );
+}
+
+function WallMetricCell({
+  label,
+  value,
+  tone = "idle",
+  tooltip,
+}: {
+  label: string;
+  value: string;
+  tone?: "active" | "ok" | "warn" | "crit" | "idle";
+  tooltip?: string;
+}) {
+  const valCls =
+    tone === "crit"
+      ? "text-[#F87171] font-semibold"
+      : tone === "warn"
+      ? "text-[#FBBF24] font-medium"
+      : tone === "ok"
+      ? "text-[#4ADE80]"
+      : tone === "active"
+      ? "text-[#E6E9EF]"
+      : "text-[#636C7C]";
+
+  const content = (
+    <div className="px-2.5 py-1.5 min-w-0">
+      <div className="text-[10px] leading-none text-[#687182]">{label}</div>
+      <div className={cn("tabular mt-1 truncate text-[11.5px] leading-tight", valCls)}>
+        {value}
+      </div>
+    </div>
+  );
+
+  if (!tooltip) return content;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{content}</TooltipTrigger>
+      <TooltipContent className="max-w-[300px]">{tooltip}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -834,20 +1065,26 @@ function KpiCell({
   value,
   unit,
   tone = "neutral",
+  title,
 }: {
   label: string;
   value: string;
   unit?: string;
-  tone?: "neutral" | "crit";
+  tone?: "neutral" | "warn" | "crit";
+  title?: string;
 }) {
   return (
-    <div>
+    <div title={title}>
       <div className="text-[11px] text-[#757E8F]">{label}</div>
       <div className="mt-0.5 flex items-baseline gap-1">
         <span
           className={cn(
-            "tabular text-[20px] font-semibold tracking-tight leading-none",
-            tone === "crit" ? "text-[#F87171]" : "text-[#F1F3F6]"
+            "tabular text-[18px] font-semibold tracking-tight leading-none",
+            tone === "crit"
+              ? "text-[#F87171]"
+              : tone === "warn"
+              ? "text-[#FBBF24]"
+              : "text-[#F1F3F6]"
           )}
         >
           {value}

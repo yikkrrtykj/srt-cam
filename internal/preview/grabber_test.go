@@ -108,11 +108,58 @@ func TestRenderDemoMonitorSVGStates(t *testing.T) {
 		t.Fatalf("expected AES PASSTHROUGH in encrypted Mode B SVG")
 	}
 
+	stopped := string(RenderDemoMonitorSVG("CAM9", model.ChannelSample{
+		ChannelID: "srt-cam9", SrcConnected: false, SrcMbps: 0, FaultCode: model.FaultStreamStopped,
+	}, now))
+	if !strings.Contains(stopped, "STOPPED") {
+		t.Fatalf("expected STOPPED in stopped SVG")
+	}
+
 	live := string(RenderDemoMonitorSVG("OB-PGM", model.ChannelSample{
 		ChannelID: "srt-cam5", Mode: model.ModeSRTRelay, SrcConnected: true, SrcMbps: 12.4,
 	}, now))
 	if !strings.Contains(live, "OB-PGM") || !strings.Contains(live, "PGM") {
 		t.Fatalf("expected live PGM monitor SVG, got: %s", live[:120])
+	}
+}
+
+func TestParseFFmpegVideoMeta(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		fps   float64
+		res   string
+		codec string
+	}{
+		{
+			name:  "1080p59.94 h264",
+			input: "Input #0, mpegts, from 'http://127.0.0.1:28001/ts':\n  Stream #0:0[0x100]: Video: h264 (High) ([27][0][0][0] / 0x001B), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 59.94 fps, 59.94 tbr, 90k tbn\n",
+			fps:   59.94,
+			res:   "1920x1080",
+			codec: "H.264",
+		},
+		{
+			name:  "4k50 hevc tbr fallback",
+			input: "  Stream #0:1[0x101]: Video: hevc (Main 10), yuv420p10le, 3840x2160, 50 tbr, 90k tbn\n",
+			fps:   50,
+			res:   "3840x2160",
+			codec: "HEVC",
+		},
+		{
+			name:  "no video stream",
+			input: "  Stream #0:0: Audio: aac, 48000 Hz, stereo\n",
+			fps:   0,
+			res:   "",
+			codec: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseFFmpegVideoMeta(tc.input)
+			if got.FPS != tc.fps || got.Resolution != tc.res || got.Codec != tc.codec {
+				t.Fatalf("ParseFFmpegVideoMeta = %+v, want fps=%v res=%q codec=%q", got, tc.fps, tc.res, tc.codec)
+			}
+		})
 	}
 }
 
@@ -195,7 +242,11 @@ func TestEndToEndFFmpegKeyframeFromRelayTee(t *testing.T) {
 			if len(snap.Data) < 1000 || snap.Data[0] != 0xFF || snap.Data[1] != 0xD8 {
 				t.Fatalf("invalid JPEG payload len=%d header=%x", len(snap.Data), snap.Data[:min(4, len(snap.Data))])
 			}
-			t.Logf("PASS: grabbed real 320x180 JPEG keyframe (%d bytes) from live mid-GOP H.264 MPEG-TS stream via relaytee", len(snap.Data))
+			meta, okMeta := mgr.VideoMeta("srt-cam5", 15*time.Second)
+			if !okMeta || meta.FPS != 30 || meta.Resolution != "1280x720" || meta.Codec != "H.264" {
+				t.Fatalf("VideoMeta = (%v, %+v), want 30fps 1280x720 H.264", okMeta, meta)
+			}
+			t.Logf("PASS: grabbed real 320x180 JPEG (%d bytes) + video meta (%s %s %.0ffps)", len(snap.Data), meta.Resolution, meta.Codec, meta.FPS)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)

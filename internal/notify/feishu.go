@@ -212,9 +212,11 @@ func (a *AlertManager) Evaluate(ctx context.Context, now time.Time, eventName st
 	cooldown := time.Duration(cfg.CooldownSec) * time.Second
 
 	for _, grp := range groups {
-		isBad := grp.ExpectedActive && (grp.Severity == model.SeverityCriticalOutage ||
-			grp.Severity == model.SeverityDegradedProtected ||
-			grp.Severity == model.SeverityDegradedSingle)
+		isBad := grp.ExpectedActive &&
+			grp.Severity != model.SeverityStopped &&
+			(grp.Severity == model.SeverityCriticalOutage ||
+				grp.Severity == model.SeverityDegradedProtected ||
+				grp.Severity == model.SeverityDegradedSingle)
 
 		a.mu.Lock()
 		st, ok := a.states[grp.ID]

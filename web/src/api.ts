@@ -63,6 +63,14 @@ export const api = {
         body: JSON.stringify({ expected_active: expectedActive }),
       }
     ),
+  setSignalGroupEnabled: (groupId: string, enabled: boolean, force = false) =>
+    reqJSON<{ ok: boolean; enabled: boolean; event_sheet: EventSheet }>(
+      `/api/v1/signal-groups/${encodeURIComponent(groupId)}/enabled`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ enabled, force }),
+      }
+    ),
   restartChannel: (nodeId: string, channelId: string, confirmChannelId: string) =>
     reqJSON<{ ok: boolean }>(
       `/api/v1/channels/${encodeURIComponent(nodeId)}/${encodeURIComponent(channelId)}/restart`,
@@ -138,6 +146,94 @@ export function formatPct(part: number, total: number): string {
   return pct >= 10 ? `${pct.toFixed(1)}%` : `${pct.toFixed(2)}%`;
 }
 
+export function formatVideoFps(leg?: LegLiveView): { text: string; tooltip: string } {
+  if (!leg || !leg.node_online) return { text: "-", tooltip: "未检测到视频流" };
+  const s = leg.sample;
+  if (!s.src_connected || s.src_mbps < 0.1) {
+    return { text: "-", tooltip: "当前无视频信号" };
+  }
+  if (leg.mode === "udp-passthrough" || s.encrypted) {
+    return { text: "-", tooltip: "加密透传模式不解密视频载荷，无法探测帧率" };
+  }
+  const fps = s.video_fps ?? 0;
+  if (fps <= 0) {
+    return { text: "探测中", tooltip: "正在随缩略图探测视频帧率与分辨率" };
+  }
+  const fpsNum = Math.abs(fps - Math.round(fps)) < 0.05 ? String(Math.round(fps)) : fps.toFixed(2);
+  const parts = [s.video_resolution, s.video_codec, `${fpsNum} fps`].filter(Boolean);
+  return {
+    text: `${fpsNum} fps`,
+    tooltip: parts.join(" · "),
+  };
+}
+
+export interface ChannelLossSummary {
+  text: string;
+  tone: BroadcastTone;
+  lost: number;
+  drops: number;
+  detail: string;
+}
+
+export function channelLossSummary(leg?: LegLiveView): ChannelLossSummary {
+  if (!leg || !leg.node_online) {
+    return { text: "-", tone: "idle", lost: 0, drops: 0, detail: "节点离线" };
+  }
+  const s = leg.sample;
+  if (s.fault_code === "STREAM_STOPPED" || (!s.src_connected && s.src_mbps < 0.1)) {
+    return { text: "0.0%", tone: "idle", lost: 0, drops: 0, detail: "当前无流传输" };
+  }
+
+  if (leg.mode === "udp-passthrough") {
+    const lost = Math.max(s.src_lost, s.dst_nak_count);
+    const drops = s.src_dropped;
+    const total = (s.src_packets ?? 0) + lost;
+    const pct = total > 0 ? ((drops > 0 ? drops : lost) / total) * 100 : 0;
+    const pctStr = `${pct.toFixed(1)}%`;
+    const detail = `透传：重传 ${s.src_retrans} · 请求重发 ${s.dst_nak_count} · 未恢复弃包 ${drops} / 总包 ${total}`;
+    if (drops > 0) {
+      return { text: `弃${drops} (${pctStr})`, tone: "crit", lost, drops, detail };
+    }
+    if (lost > 0 || s.src_retrans > 0) {
+      return { text: `${lost} (${pctStr})`, tone: "warn", lost, drops, detail };
+    }
+    return { text: "0 (0.0%)", tone: "ok", lost: 0, drops: 0, detail };
+  }
+
+  const upTotal = (s.src_packets ?? 0) + s.src_lost;
+  const downTotal = (s.dst_packets ?? 0) + s.dst_lost;
+  const upPct = upTotal > 0 ? (s.src_lost / upTotal) * 100 : 0;
+  const downPct = downTotal > 0 ? (s.dst_lost / downTotal) * 100 : 0;
+  const drops = s.src_dropped + s.dst_dropped;
+  const worstIsDown = downPct > upPct;
+  const worstLost = worstIsDown ? s.dst_lost : s.src_lost;
+  const worstPct = worstIsDown ? downPct : upPct;
+  const dropBase = Math.max(upTotal, downTotal, 1);
+  const dropPct = (drops / dropBase) * 100;
+
+  const detail = `入站丢包 ${s.src_lost}/${upTotal} (${upPct.toFixed(2)}%) 弃包 ${s.src_dropped} · 出站丢包 ${s.dst_lost}/${downTotal} (${downPct.toFixed(2)}%) 弃包 ${s.dst_dropped}`;
+
+  if (drops > 0) {
+    return {
+      text: `弃${drops} (${dropPct.toFixed(1)}%)`,
+      tone: "crit",
+      lost: s.src_lost + s.dst_lost,
+      drops,
+      detail,
+    };
+  }
+  if (worstLost > 0) {
+    return {
+      text: `${worstLost} (${worstPct.toFixed(1)}%)`,
+      tone: "warn",
+      lost: s.src_lost + s.dst_lost,
+      drops: 0,
+      detail,
+    };
+  }
+  return { text: "0 (0.0%)", tone: "ok", lost: 0, drops: 0, detail };
+}
+
 export function resolveNodeHost(nodes: { node_id: string; public_ip: string }[], nodeId: string): string {
   const found = nodes.find((n) => n.node_id === nodeId);
   if (found?.public_ip) return found.public_ip;
@@ -152,6 +248,10 @@ export function auditActionText(action: string): string {
     case "safe_single_restart":
     case "restart_channel":
       return "重置信号通道";
+    case "start_signal_stream":
+      return "启动信号流";
+    case "stop_signal_stream":
+      return "停止信号流";
     case "update_event_sheet":
       return "保存通道配置";
     case "toggle_expected_active":
@@ -191,6 +291,7 @@ export type BroadcastTone = "ok" | "warn" | "crit" | "idle";
 
 export function isGroupAwaitingDownstream(g: SignalGroupLiveView): boolean {
   return (
+    g.enabled &&
     g.expected_active &&
     g.severity === "CRITICAL_OUTAGE" &&
     g.legs.length > 0 &&
@@ -199,6 +300,9 @@ export function isGroupAwaitingDownstream(g: SignalGroupLiveView): boolean {
 }
 
 export function groupStatusMeta(g: SignalGroupLiveView): { label: string; tone: BroadcastTone } {
+  if (!g.enabled || g.severity === "STOPPED") {
+    return { label: "已停止", tone: "idle" };
+  }
   if (isGroupAwaitingDownstream(g)) {
     return { label: "待拉流", tone: "warn" };
   }
@@ -209,6 +313,8 @@ export function severityMeta(sev: string): { label: string; tone: BroadcastTone 
   switch (sev) {
     case "HEALTHY":
       return { label: "正常在播", tone: "ok" };
+    case "STOPPED":
+      return { label: "已停止", tone: "idle" };
     case "DEGRADED_PROTECTED":
       return { label: "备路接管", tone: "warn" };
     case "DEGRADED_SINGLE":
@@ -221,6 +327,7 @@ export function severityMeta(sev: string): { label: string; tone: BroadcastTone 
 }
 
 export function legTone(leg: LegLiveView): BroadcastTone {
+  if (leg.sample.fault_code === "STREAM_STOPPED") return "idle";
   if (!leg.node_online) return "crit";
   switch (leg.sample.fault_code) {
     case "HEALTHY":

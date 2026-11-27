@@ -108,9 +108,20 @@ type SignalGroupConfig struct {
 	Name           string               `json:"name"`
 	Direction      model.Direction      `json:"direction"`
 	RedundancyType model.RedundancyType `json:"redundancy_type"`
+	Enabled        *bool                `json:"enabled,omitempty"` // nil defaults to true for backward compatibility
 	ExpectedActive bool                 `json:"expected_active"`
 	Notes          string               `json:"notes,omitempty"`
 	Legs           []LegConfig          `json:"legs"`
+}
+
+// BoolPtr allocates a pointer to a bool value.
+func BoolPtr(v bool) *bool {
+	return &v
+}
+
+// IsEnabled returns true when the stream switch is ON (nil defaults to true for legacy configs).
+func (g SignalGroupConfig) IsEnabled() bool {
+	return g.Enabled == nil || *g.Enabled
 }
 
 // LegConfig binds one physical channel on a specific VPS node to a logical signal group.
@@ -270,8 +281,60 @@ func DefaultEventSheet(nodeID string) EventSheet {
 	}
 }
 
-// ValidateEventSheet enforces structural integrity before saving or loading.
+// ValidateEventSheet enforces structural integrity plus cross-signal channel and port uniqueness per node.
 func ValidateEventSheet(sheet EventSheet) error {
+	if err := validateEventSheetStructure(sheet); err != nil {
+		return err
+	}
+	usedChannels := make(map[string]string) // "node/channel" -> signal group name
+	usedPorts := make(map[string]string)    // "node:port" -> owner description
+
+	for _, g := range sheet.SignalGroups {
+		seenInGroup := make(map[string]bool)
+		for _, leg := range g.Legs {
+			legKey := leg.NodeID + "/" + leg.ChannelID
+			if seenInGroup[legKey] {
+				return fmt.Errorf("信号「%s」的主备链路不能重复使用同一服务器的同一通道 (%s)", g.Name, legKey)
+			}
+			seenInGroup[legKey] = true
+
+			if owner, exists := usedChannels[legKey]; exists {
+				return fmt.Errorf("通道冲突：信号「%s」与「%s」不能同时使用同一服务器的同一通道 (%s)", g.Name, owner, legKey)
+			}
+			usedChannels[legKey] = g.Name
+
+			if leg.InPort != 0 {
+				if leg.InPort < 1 || leg.InPort > 65535 {
+					return fmt.Errorf("信号「%s」的推流/监听端口 %d 超出有效范围 (1-65535)", g.Name, leg.InPort)
+				}
+				inPortKey := fmt.Sprintf("%s:%d", leg.NodeID, leg.InPort)
+				if owner, exists := usedPorts[inPortKey]; exists {
+					return fmt.Errorf("端口冲突：信号「%s」与%s不能在同一服务器 (%s) 上共用端口 %d", g.Name, owner, leg.NodeID, leg.InPort)
+				}
+				usedPorts[inPortKey] = fmt.Sprintf("信号「%s」", g.Name)
+			}
+
+			// For Mode A (srt-relay), out_port is also bound locally on the VPS and must be unique.
+			// For Mode B (udp-passthrough), out_port is the remote studio decoder port, not bound on VPS.
+			if leg.Mode == model.ModeSRTRelay && leg.OutPort != 0 {
+				if leg.OutPort < 1 || leg.OutPort > 65535 {
+					return fmt.Errorf("信号「%s」的拉流端口 %d 超出有效范围 (1-65535)", g.Name, leg.OutPort)
+				}
+				if leg.OutPort == leg.InPort {
+					return fmt.Errorf("端口冲突：信号「%s」的推流端口与拉流端口不能相同 (%d)", g.Name, leg.OutPort)
+				}
+				outPortKey := fmt.Sprintf("%s:%d", leg.NodeID, leg.OutPort)
+				if owner, exists := usedPorts[outPortKey]; exists {
+					return fmt.Errorf("端口冲突：信号「%s」与%s不能在同一服务器 (%s) 上共用端口 %d", g.Name, owner, leg.NodeID, leg.OutPort)
+				}
+				usedPorts[outPortKey] = fmt.Sprintf("信号「%s」", g.Name)
+			}
+		}
+	}
+	return nil
+}
+
+func validateEventSheetStructure(sheet EventSheet) error {
 	seenGroups := make(map[string]bool)
 	for idx, g := range sheet.SignalGroups {
 		if g.ID == "" {
@@ -290,7 +353,6 @@ func ValidateEventSheet(sheet EventSheet) error {
 		if len(g.Legs) == 0 {
 			return fmt.Errorf("signal_group %q: at least one leg is required", g.ID)
 		}
-		seenLegs := make(map[string]bool)
 		roleCounts := make(map[string]int)
 		for lidx, leg := range g.Legs {
 			if leg.NodeID == "" || leg.ChannelID == "" {
@@ -299,15 +361,54 @@ func ValidateEventSheet(sheet EventSheet) error {
 			if leg.Mode != model.ModeSRTRelay && leg.Mode != model.ModeUDPPassthrough {
 				return fmt.Errorf("signal_group %q leg[%d]: invalid mode %q", g.ID, lidx, leg.Mode)
 			}
-			legKey := leg.NodeID + "/" + leg.ChannelID
-			if seenLegs[legKey] {
-				return fmt.Errorf("信号「%s」的主备链路不能重复使用同一服务器的同一通道 (%s)", g.Name, legKey)
-			}
-			seenLegs[legKey] = true
 			roleCounts[leg.Role]++
 		}
 		if len(g.Legs) == 2 && (roleCounts["primary"] != 1 || roleCounts["backup"] != 1) {
 			return fmt.Errorf("信号「%s」双路配置必须为一主一备（不能同时为主路或同时为备路）", g.Name)
+		}
+	}
+	return nil
+}
+
+// ValidateEditLock enforces Haivision-style stream lock rules: while a signal's stream switch
+// is ON, transport parameters and deletion are blocked, while non-disruptive metadata (name,
+// direction, alarm toggle, notes, carrier/device remarks) remain freely editable.
+func ValidateEditLock(current, next EventSheet) error {
+	nextByID := make(map[string]SignalGroupConfig, len(next.SignalGroups))
+	for _, g := range next.SignalGroups {
+		nextByID[g.ID] = g
+	}
+	for _, cur := range current.SignalGroups {
+		ng, exists := nextByID[cur.ID]
+		if !exists {
+			if cur.IsEnabled() {
+				return fmt.Errorf("信号「%s」正在运行，请先关闭流开关后再删除", cur.Name)
+			}
+			continue
+		}
+		if ng.IsEnabled() != cur.IsEnabled() {
+			return fmt.Errorf("请通过流开关启停信号「%s」", cur.Name)
+		}
+		if !cur.IsEnabled() {
+			continue
+		}
+		if ng.RedundancyType != cur.RedundancyType {
+			return fmt.Errorf("信号「%s」正在运行，请先关闭流开关后再修改单路/主备架构", cur.Name)
+		}
+		if len(ng.Legs) != len(cur.Legs) {
+			return fmt.Errorf("信号「%s」正在运行，请先关闭流开关后再增删主备链路", cur.Name)
+		}
+		for i := range cur.Legs {
+			a, b := cur.Legs[i], ng.Legs[i]
+			if a.Role != b.Role ||
+				a.NodeID != b.NodeID ||
+				a.ChannelID != b.ChannelID ||
+				a.Mode != b.Mode ||
+				a.InPort != b.InPort ||
+				a.OutPort != b.OutPort ||
+				a.TargetAddr != b.TargetAddr {
+				return fmt.Errorf("信号「%s」正在运行，请先关闭流开关后再修改服务器、通道、模式或端口参数（名称和备注可直接修改）", cur.Name)
+			}
 		}
 	}
 	return nil
@@ -336,7 +437,7 @@ func NewEventStore(path, defaultNodeID string) (*EventStore, error) {
 	if err := json.Unmarshal(data, &sheet); err != nil {
 		return nil, fmt.Errorf("parse event sheet %q: %w", path, err)
 	}
-	if err := ValidateEventSheet(sheet); err != nil {
+	if err := validateEventSheetStructure(sheet); err != nil {
 		return nil, fmt.Errorf("validate event sheet %q: %w", path, err)
 	}
 	return &EventStore{path: path, sheet: sheet}, nil
@@ -357,6 +458,10 @@ func (s *EventStore) Save(next EventSheet) error {
 	if err := ValidateEventSheet(next); err != nil {
 		return err
 	}
+	return s.writeSheet(next)
+}
+
+func (s *EventStore) writeSheet(next EventSheet) error {
 	raw, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
 		return err
@@ -395,7 +500,27 @@ func (s *EventStore) SetExpectedActive(groupID string, active bool) (EventSheet,
 	if !found {
 		return cur, fmt.Errorf("signal group %q not found", groupID)
 	}
-	if err := s.Save(cur); err != nil {
+	if err := s.writeSheet(cur); err != nil {
+		return cur, err
+	}
+	return cur, nil
+}
+
+// SetEnabled toggles the Haivision-style stream power/lock state for a single signal group atomically.
+func (s *EventStore) SetEnabled(groupID string, enabled bool) (EventSheet, error) {
+	cur := s.Get()
+	found := false
+	for i := range cur.SignalGroups {
+		if cur.SignalGroups[i].ID == groupID {
+			cur.SignalGroups[i].Enabled = BoolPtr(enabled)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return cur, fmt.Errorf("signal group %q not found", groupID)
+	}
+	if err := s.writeSheet(cur); err != nil {
 		return cur, err
 	}
 	return cur, nil
