@@ -363,10 +363,14 @@ func (m *Manager) simulateDemoPeers(sheet config.EventSheet) {
 					s.DstConnected = true
 					s.SrcMbps = baseRate + 0.25*math.Cos(elapsed/6.0+float64(idx))
 					s.DstMbps = s.SrcMbps
+					s.SrcPackets = int64(s.SrcMbps * 180)
+					s.DstPackets = int64(s.DstMbps * 180)
 					if leg.Mode != model.ModeUDPPassthrough {
 						s.SrcRTTMs = 37.0 + 3.5*math.Sin(elapsed/8.0+float64(pIdx))
 						s.DstRTTMs = 43.0 + 4.0*math.Cos(elapsed/9.0+float64(pIdx))
 						s.SrcTSBPDMs = 240
+						s.SrcLinkBWMbps = 48.0 + 4.0*math.Sin(elapsed/20.0+float64(pIdx))
+						s.DstLinkBWMbps = 44.0 + 3.5*math.Cos(elapsed/22.0+float64(pIdx))
 					}
 					if grp.ID == "16mv-1" && leg.Role == "primary" {
 						s.SrcLost = 1
@@ -431,6 +435,8 @@ func (m *Manager) simulateDemoPeerTimeline(nodeID, channelID string, fromTS, toT
 			DstConnected:   true,
 			SrcMbps:        rate,
 			DstMbps:        rate,
+			SrcPackets:     int64(rate * 90 * float64(step)),
+			DstPackets:     int64(rate * 90 * float64(step)),
 			PathMedium:     "WAN",
 			HasNativeStats: true,
 			Encrypted:      mode == model.ModeUDPPassthrough,
@@ -441,6 +447,9 @@ func (m *Manager) simulateDemoPeerTimeline(nodeID, channelID string, fromTS, toT
 		if mode != model.ModeUDPPassthrough {
 			cs.SrcRTTMs = 41.0 + 3.0*math.Sin(t/18.0)
 			cs.DstRTTMs = 46.0 + 3.5*math.Cos(t/22.0)
+			cs.SrcTSBPDMs = 240
+			cs.SrcLinkBWMbps = 48.0 + 3.5*math.Sin(t/40.0)
+			cs.DstLinkBWMbps = 44.0 + 3.0*math.Cos(t/45.0)
 		}
 		chs = append(chs, cs)
 		hosts = append(hosts, model.HostSample{

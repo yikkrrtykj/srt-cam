@@ -14,24 +14,28 @@ import (
 type ParsedSRTLogs struct {
 	HasNativeStats bool
 
-	SrcConnected bool
-	SrcMbps      float64
-	SrcRTTMs     float64
-	SrcLost      int64
-	SrcRetrans   int64
-	SrcDropped   int64
-	SrcTSBPDMs   float64
-	SrcLastTS    time.Time
-	SrcPeerIP    string
+	SrcConnected  bool
+	SrcMbps       float64
+	SrcRTTMs      float64
+	SrcPackets    int64
+	SrcLost       int64
+	SrcRetrans    int64
+	SrcDropped    int64
+	SrcTSBPDMs    float64
+	SrcLinkBWMbps float64
+	SrcLastTS     time.Time
+	SrcPeerIP     string
 
-	DstConnected bool
-	DstMbps      float64
-	DstRTTMs     float64
-	DstLost      int64
-	DstRetrans   int64
-	DstDropped   int64
-	DstLastTS    time.Time
-	DstPeerIP    string
+	DstConnected  bool
+	DstMbps       float64
+	DstRTTMs      float64
+	DstPackets    int64
+	DstLost       int64
+	DstRetrans    int64
+	DstDropped    int64
+	DstLinkBWMbps float64
+	DstLastTS     time.Time
+	DstPeerIP     string
 
 	PathMedium string // WAN, LO, WAN+LO, -
 }
@@ -39,7 +43,8 @@ type ParsedSRTLogs struct {
 type rawSRTStats struct {
 	SID  int64 `json:"sid"`
 	Link struct {
-		RTT float64 `json:"rtt"`
+		RTT       float64 `json:"rtt"`
+		Bandwidth float64 `json:"bandwidth"`
 	} `json:"link"`
 	Recv struct {
 		Packets              float64 `json:"packets"`
@@ -96,15 +101,30 @@ func DemuxDockerStream(raw []byte) string {
 	return string(raw)
 }
 
-// ParseSRTLogs extracts latest SOURCE & TARGET metrics and connection lifecycle events
-// from timestamped srt-live-transmit logs within the freshness window relative to now.
+// ParseSRTLogs extracts latest SOURCE & TARGET metrics from timestamped srt-live-transmit logs.
 func ParseSRTLogs(logText string, now time.Time, staleAfter time.Duration) ParsedSRTLogs {
+	return ParseSRTLogsSince(logText, now, staleAfter, time.Time{}, time.Time{})
+}
+
+// ParseSRTLogsSince extracts latest rate/RTT state plus deduplicated packet deltas
+// (Packets, Lost, Retransmitted, Dropped) strictly from JSON lines newer than
+// lastSrcTS / lastDstTS so repeated 2-second polls never double-count the same report
+// and high-bitrate streams with multiple reports per poll never lose counts.
+func ParseSRTLogsSince(
+	logText string,
+	now time.Time,
+	staleAfter time.Duration,
+	lastSrcTS time.Time,
+	lastDstTS time.Time,
+) ParsedSRTLogs {
 	if staleAfter <= 0 {
-		staleAfter = 20 * time.Second
+		staleAfter = 30 * time.Second
 	}
 	res := ParsedSRTLogs{PathMedium: "-"}
 	hasLO := false
 	hasWAN := false
+	hasSrcCursor := !lastSrcTS.IsZero()
+	hasDstCursor := !lastDstTS.IsZero()
 
 	for _, rawLine := range strings.Split(logText, "\n") {
 		line := strings.TrimSpace(rawLine)
@@ -124,34 +144,53 @@ func ParseSRTLogs(logText string, now time.Time, staleAfter time.Duration) Parse
 		if strings.HasPrefix(payload, "{") {
 			var s rawSRTStats
 			if err := json.Unmarshal([]byte(payload), &s); err == nil {
+				lineTS := ts
+				if lineTS.IsZero() {
+					lineTS = now
+				}
 				switch {
 				case s.Recv.Packets > s.Send.Packets:
 					res.HasNativeStats = true
 					res.SrcMbps = s.Recv.MbitRate
 					res.SrcRTTMs = s.Link.RTT
-					res.SrcLost = s.Recv.PacketsLost
-					res.SrcRetrans = s.Recv.PacketsRetransmitted
-					res.SrcDropped = s.Recv.PacketsDropped
 					res.SrcTSBPDMs = s.Recv.MsTsbPdDelay
-					if !ts.IsZero() {
-						res.SrcLastTS = ts
-					} else {
-						res.SrcLastTS = now
-					}
+					res.SrcLinkBWMbps = s.Link.Bandwidth
+					res.SrcLastTS = lineTS
 					res.SrcConnected = true
+					if hasSrcCursor {
+						if !ts.IsZero() && ts.After(lastSrcTS) {
+							res.SrcPackets += int64(s.Recv.Packets)
+							res.SrcLost += s.Recv.PacketsLost
+							res.SrcRetrans += s.Recv.PacketsRetransmitted
+							res.SrcDropped += s.Recv.PacketsDropped
+						}
+					} else {
+						// First poll (no cursor yet): capture latest single report cleanly
+						res.SrcPackets = int64(s.Recv.Packets)
+						res.SrcLost = s.Recv.PacketsLost
+						res.SrcRetrans = s.Recv.PacketsRetransmitted
+						res.SrcDropped = s.Recv.PacketsDropped
+					}
 				case s.Send.Packets > s.Recv.Packets:
 					res.HasNativeStats = true
 					res.DstMbps = s.Send.MbitRate
 					res.DstRTTMs = s.Link.RTT
-					res.DstLost = s.Send.PacketsLost
-					res.DstRetrans = s.Send.PacketsRetransmitted
-					res.DstDropped = s.Send.PacketsDropped
-					if !ts.IsZero() {
-						res.DstLastTS = ts
-					} else {
-						res.DstLastTS = now
-					}
+					res.DstLinkBWMbps = s.Link.Bandwidth
+					res.DstLastTS = lineTS
 					res.DstConnected = true
+					if hasDstCursor {
+						if !ts.IsZero() && ts.After(lastDstTS) {
+							res.DstPackets += int64(s.Send.Packets)
+							res.DstLost += s.Send.PacketsLost
+							res.DstRetrans += s.Send.PacketsRetransmitted
+							res.DstDropped += s.Send.PacketsDropped
+						}
+					} else {
+						res.DstPackets = int64(s.Send.Packets)
+						res.DstLost = s.Send.PacketsLost
+						res.DstRetrans = s.Send.PacketsRetransmitted
+						res.DstDropped = s.Send.PacketsDropped
+					}
 				}
 			}
 			continue
@@ -168,6 +207,7 @@ func ParseSRTLogs(logText string, now time.Time, staleAfter time.Duration) Parse
 		} else if strings.Contains(lower, "srt source disconnected") {
 			res.SrcConnected = false
 			res.SrcMbps = 0
+			res.SrcRTTMs = 0
 		} else if strings.Contains(lower, "accepted srt target connection") || strings.Contains(lower, "srt target connected") {
 			res.DstConnected = true
 			if ip := extractIP(payload); ip != "" {
@@ -177,28 +217,34 @@ func ParseSRTLogs(logText string, now time.Time, staleAfter time.Duration) Parse
 		} else if strings.Contains(lower, "srt target disconnected") {
 			res.DstConnected = false
 			res.DstMbps = 0
+			res.DstRTTMs = 0
 		}
 
+		// Only apply text-fallback drop hint when line is newer than cursor
 		if reRcvDropped.MatchString(payload) {
-			if res.SrcDropped == 0 {
+			if (!hasSrcCursor || (!ts.IsZero() && ts.After(lastSrcTS))) && res.SrcDropped == 0 {
 				res.SrcDropped = 1
 			}
 		}
 		if reSndDropped.MatchString(payload) {
-			if res.DstDropped == 0 {
+			if (!hasDstCursor || (!ts.IsZero() && ts.After(lastDstTS))) && res.DstDropped == 0 {
 				res.DstDropped = 1
 			}
 		}
 	}
 
 	// If native stats were emitted earlier but have gone silent beyond staleAfter,
-	// decay Mbps to 0 so outages are immediately detected instead of showing stale numbers.
+	// decay rate and RTT to 0 so outages are detected cleanly without showing stale numbers.
 	if res.HasNativeStats {
 		if !res.SrcLastTS.IsZero() && now.Sub(res.SrcLastTS) > staleAfter {
 			res.SrcMbps = 0
+			res.SrcRTTMs = 0
+			res.SrcConnected = false
 		}
 		if !res.DstLastTS.IsZero() && now.Sub(res.DstLastTS) > staleAfter {
 			res.DstMbps = 0
+			res.DstRTTMs = 0
+			res.DstConnected = false
 		}
 	}
 

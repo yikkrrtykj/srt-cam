@@ -21,8 +21,9 @@ function legStatusClass(leg: LegLiveView): { dot: string; tone: "ok" | "warn" | 
       return { dot: "dot-ok", tone: "ok" };
     case "IDLE_EXPECTED_OFF":
       return { dot: "dot-idle", tone: "idle" };
-    case "UPSTREAM_OFFLINE":
     case "DOWNSTREAM_OFFLINE":
+      return { dot: "dot-warn", tone: "warn" };
+    case "UPSTREAM_OFFLINE":
     case "CLOUD_PROCESS_DOWN":
     case "NODE_UNREACHABLE":
       return { dot: "dot-crit", tone: "crit" };
@@ -37,8 +38,9 @@ function roleLabel(role: string): string {
   return "单路";
 }
 
-function connBadge(connected: boolean, mbps: number): { label: string; cls: string } {
+function connBadge(connected: boolean, mbps: number, awaiting = false): { label: string; cls: string } {
   if (connected && mbps >= 0.1) return { label: "LIVE", cls: "pill-ok" };
+  if (awaiting) return { label: "待拉流", cls: "pill-warn" };
   if (connected) return { label: "IDLE", cls: "pill-idle" };
   return { label: "OFFLINE", cls: "pill-crit" };
 }
@@ -93,7 +95,11 @@ export function SignalHealthPanel({
             s.dst_rtt_ms >= 250 ? "crit" : s.dst_rtt_ms >= 100 ? "warn" : "ok";
 
           const srcBadge = connBadge(s.src_connected, s.src_mbps);
-          const dstBadge = connBadge(s.dst_connected, s.dst_mbps);
+          const dstBadge = connBadge(
+            s.dst_connected,
+            s.dst_mbps,
+            s.fault_code === "DOWNSTREAM_OFFLINE"
+          );
 
           return (
             <div key={key} className={`health-leg-card tone-${st.tone}`}>

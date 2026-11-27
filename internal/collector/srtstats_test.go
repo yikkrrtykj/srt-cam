@@ -28,11 +28,40 @@ func TestParseSRTLogsNativeFixtureAndStaleness(t *testing.T) {
 		t.Fatalf("PathMedium = %q, want WAN+LO", got.PathMedium)
 	}
 
-	// Advance time past stale window -> rates must decay to 0 so outages aren't hidden
+	// Advance time past stale window -> rates & RTT must decay to 0 so outages aren't hidden
 	stale := ParseSRTLogs(logs, now.Add(45*time.Second), 20*time.Second)
-	if stale.SrcMbps != 0 || stale.DstMbps != 0 {
-		t.Fatalf("expected stale Mbps to decay to 0, got src=%.2f dst=%.2f", stale.SrcMbps, stale.DstMbps)
+	if stale.SrcMbps != 0 || stale.DstMbps != 0 || stale.SrcRTTMs != 0 {
+		t.Fatalf("expected stale Mbps/RTT to decay to 0, got src=%.2f dst=%.2f rtt=%.1f", stale.SrcMbps, stale.DstMbps, stale.SrcRTTMs)
 	}
+}
+
+func TestParseSRTLogsSinceDeduplicatesAndSums(t *testing.T) {
+	t1 := time.Date(2026, 10, 22, 1, 40, 5, 0, time.UTC)
+	t2 := t1.Add(1 * time.Second)
+	t3 := t1.Add(2 * time.Second)
+	logs := "" +
+		`2026-10-22T01:40:05Z {"sid":101,"link":{"rtt":190,"bandwidth":48.5},"recv":{"packets":250,"packetsLost":2,"packetsRetransmitted":2,"packetsDropped":0,"msTsbPdDelay":1000,"mbitRate":3.1},"send":{"packets":0}}` + "\n" +
+		`2026-10-22T01:40:06Z {"sid":101,"link":{"rtt":192,"bandwidth":49.0},"recv":{"packets":250,"packetsLost":3,"packetsRetransmitted":2,"packetsDropped":1,"msTsbPdDelay":1000,"mbitRate":3.4},"send":{"packets":0}}` + "\n" +
+		`2026-10-22T01:40:07Z {"sid":101,"link":{"rtt":191,"bandwidth":50.2},"recv":{"packets":250,"packetsLost":1,"packetsRetransmitted":1,"packetsDropped":0,"msTsbPdDelay":1000,"mbitRate":3.5},"send":{"packets":0}}` + "\n"
+
+	// Cursor at t1 -> must sum ONLY t2 + t3 (packets=500, lost=4, retrans=3, dropped=1)
+	delta := ParseSRTLogsSince(logs, t3.Add(time.Second), 30*time.Second, t1, time.Time{})
+	if delta.SrcPackets != 500 || delta.SrcLost != 4 || delta.SrcRetrans != 3 || delta.SrcDropped != 1 {
+		t.Fatalf("unexpected delta after t1: %+v", delta)
+	}
+	if delta.SrcMbps != 3.5 || delta.SrcLinkBWMbps != 50.2 || !delta.SrcLastTS.Equal(t3) {
+		t.Fatalf("unexpected live rates: mbps=%.2f bw=%.2f ts=%v", delta.SrcMbps, delta.SrcLinkBWMbps, delta.SrcLastTS)
+	}
+
+	// Re-polling same log with cursor at t3 -> packet deltas must be 0, while live rate remains 3.5
+	repeat := ParseSRTLogsSince(logs, t3.Add(3*time.Second), 30*time.Second, t3, time.Time{})
+	if repeat.SrcPackets != 0 || repeat.SrcLost != 0 || repeat.SrcRetrans != 0 || repeat.SrcDropped != 0 {
+		t.Fatalf("expected zero duplicate deltas on repeat poll, got %+v", repeat)
+	}
+	if repeat.SrcMbps != 3.5 || repeat.SrcRTTMs != 191 || !repeat.SrcConnected {
+		t.Fatalf("expected live rate preserved between reports, got %+v", repeat)
+	}
+	_ = t2
 }
 
 func TestDemuxDockerStream(t *testing.T) {

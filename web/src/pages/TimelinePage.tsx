@@ -19,6 +19,7 @@ interface Props {
 type DetailTab = "timeline" | "endpoints" | "events" | "logs";
 
 const PRESETS = [
+  { label: "5m", sec: 5 * 60 },
   { label: "15m", sec: 15 * 60 },
   { label: "30m", sec: 30 * 60 },
   { label: "2h", sec: 2 * 3600 },
@@ -151,7 +152,19 @@ export function TimelinePage({
     chartRef.current.exportReportPNG(headerLines);
   }
 
-  const sev = data ? severityText(data.live_group.severity) : { label: "-", cls: "pill-idle", dot: "dot-idle" };
+  const awaitingDown =
+    !!data &&
+    data.live_group.expected_active &&
+    data.live_group.severity === "CRITICAL_OUTAGE" &&
+    data.live_group.legs.length > 0 &&
+    data.live_group.legs.every(
+      (l) => l.node_online && l.sample.fault_code === "DOWNSTREAM_OFFLINE"
+    );
+  const sev = data
+    ? awaitingDown
+      ? { label: "待拉流", cls: "pill-warn", dot: "dot-warn" }
+      : severityText(data.live_group.severity)
+    : { label: "-", cls: "pill-idle", dot: "dot-idle" };
 
   const legWindowStats = useMemo<Record<string, LegWindowStats>>(() => {
     if (!data) return {};

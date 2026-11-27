@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
-import type { GroupTimelineResponse, LegLiveView, SignalGroupLiveView } from "../types";
+import type { ChannelSample, GroupTimelineResponse, LegLiveView, SignalGroupLiveView } from "../types";
 import { api, formatTime, formatUptime } from "../api";
 
 interface Props {
@@ -11,10 +11,16 @@ interface Props {
 }
 
 const WINDOWS = [
+  { label: "5m", sec: 5 * 60 },
   { label: "15m", sec: 15 * 60 },
   { label: "30m", sec: 30 * 60 },
   { label: "2h", sec: 2 * 3600 },
 ];
+
+const COLOR_PERIWINKLE = "#818cf8";
+const COLOR_AMBER = "#f59e0b";
+const COLOR_SLATE = "#64748b";
+const COLOR_CRIMSON = "#ef4444";
 
 function legDotClass(leg: LegLiveView): string {
   if (!leg.node_online) return "dot-crit";
@@ -23,8 +29,9 @@ function legDotClass(leg: LegLiveView): string {
       return "dot-ok";
     case "IDLE_EXPECTED_OFF":
       return "dot-idle";
-    case "UPSTREAM_OFFLINE":
     case "DOWNSTREAM_OFFLINE":
+      return "dot-warn";
+    case "UPSTREAM_OFFLINE":
     case "CLOUD_PROCESS_DOWN":
     case "NODE_UNREACHABLE":
       return "dot-crit";
@@ -41,8 +48,9 @@ function statusDisplay(leg: LegLiveView): { label: string; color: string } {
       return { label: "Streaming", color: "var(--ok)" };
     case "IDLE_EXPECTED_OFF":
       return { label: "Standby", color: "var(--text-muted)" };
-    case "UPSTREAM_OFFLINE":
     case "DOWNSTREAM_OFFLINE":
+      return { label: "待拉流 (入站正常)", color: "var(--warn)" };
+    case "UPSTREAM_OFFLINE":
     case "CLOUD_PROCESS_DOWN":
       return { label: "Offline", color: "var(--crit)" };
     default:
@@ -52,22 +60,39 @@ function statusDisplay(leg: LegLiveView): { label: string; color: string } {
 
 function toSeries<T extends { ts: number }>(
   items: T[],
-  pick: (item: T) => number
+  pick: (item: T, dtSec: number) => number
 ): Array<[number, number | null]> {
   const out: Array<[number, number | null]> = [];
   for (let i = 0; i < items.length; i++) {
     const cur = items[i];
+    const dtSec = i > 0 ? Math.max(cur.ts - items[i - 1].ts, 2) : 2;
     if (i > 0 && cur.ts - items[i - 1].ts > 30) {
       out.push([(items[i - 1].ts + 1) * 1000, null]);
     }
-    out.push([cur.ts * 1000, pick(cur)]);
+    out.push([cur.ts * 1000, pick(cur, dtSec)]);
   }
   return out;
 }
 
+function legRetransMbps(mbps: number, pkts: number, retrans: number, dtSec: number): number {
+  if (retrans <= 0) return 0;
+  if (pkts > 0 && mbps > 0) {
+    return (mbps * retrans) / pkts;
+  }
+  // Fallback for rows collected before packet counts existed: 1360 bytes/SRT packet
+  return (retrans * 1360 * 8) / (Math.max(dtSec, 2) * 1e6);
+}
+
+function calcRetransMbps(s: ChannelSample, isPass: boolean, dtSec: number): number {
+  const srcVal = legRetransMbps(s.src_mbps, s.src_packets ?? 0, s.src_retrans, dtSec);
+  if (isPass) return Number(srcVal.toFixed(3));
+  const dstVal = legRetransMbps(s.dst_mbps, s.dst_packets ?? 0, s.dst_retrans, dtSec);
+  return Number((srcVal + dstVal).toFixed(3));
+}
+
 export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: Props) {
   const [legIdx, setLegIdx] = useState(0);
-  const [windowSec, setWindowSec] = useState(15 * 60);
+  const [windowSec, setWindowSec] = useState(5 * 60);
   const [timeline, setTimeline] = useState<GroupTimelineResponse | null>(null);
 
   // Interactive legend pill toggles (exact Haivision Gateway pattern)
@@ -77,6 +102,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
 
   const [showRate, setShowRate] = useState(true);
   const [showRetrans, setShowRetrans] = useState(true);
+  const [showLinkBw, setShowLinkBw] = useState(false);
   const [showDropped, setShowDropped] = useState(true);
 
   const leftChartRef = useRef<HTMLDivElement>(null);
@@ -114,6 +140,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
   }, [timeline, activeLeg, safeIdx]);
 
   const isPass = activeLeg?.mode === "udp-passthrough";
+  const rttLineColor = theme === "dark" ? "#e2e8f0" : "#1e293b";
 
   // Render Left (DELAY / PACKET EVENTS) & Right (BANDWIDTH USE) Haivision charts
   useEffect(() => {
@@ -126,14 +153,14 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
 
     const isDark = theme === "dark";
     const splitColor = isDark ? "rgba(255,255,255,0.06)" : "#edf0f5";
-    const axisColor = isDark ? "#333947" : "#cbd5e1";
-    const labelColor = isDark ? "#7e8699" : "#64748b";
+    const axisColor = isDark ? "#383e4c" : "#cbd5e1";
+    const labelColor = isDark ? "#8b94a5" : "#64748b";
     const tooltipStyle = {
       trigger: "axis" as const,
-      axisPointer: { type: "line" as const, lineStyle: { color: "#6e7c8e", type: "dashed" as const } },
-      backgroundColor: isDark ? "rgba(18, 20, 26, 0.96)" : "rgba(15, 23, 42, 0.94)",
-      borderColor: "#333947",
-      textStyle: { color: "#e6edf3", fontSize: 12 },
+      axisPointer: { type: "line" as const, lineStyle: { color: "#788294", type: "dashed" as const } },
+      backgroundColor: isDark ? "rgba(20, 22, 28, 0.96)" : "rgba(15, 23, 42, 0.94)",
+      borderColor: "#404756",
+      textStyle: { color: "#eceff4", fontSize: 12 },
     };
 
     const xAxis = {
@@ -156,47 +183,51 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
     if (!isPass) {
       if (showLatency) {
         leftSeries.push({
-          name: "Latency (TSBPD)",
+          name: "Latency (ms)",
           type: "line",
           showSymbol: false,
-          lineStyle: { width: 1.8, color: "#e3b341" },
+          itemStyle: { color: COLOR_AMBER },
+          lineStyle: { width: 1.8, color: COLOR_AMBER },
           data: toSeries(samples, (s) => Number(s.src_tsbpd_ms.toFixed(0))),
         });
       }
       if (showRtt) {
         leftSeries.push({
-          name: "Round Trip (上行)",
+          name: "Round Trip (ms)",
           type: "line",
           showSymbol: false,
-          lineStyle: { width: 1.8, color: "#60a5fa" },
+          itemStyle: { color: rttLineColor },
+          lineStyle: { width: 1.8, color: rttLineColor },
           data: toSeries(samples, (s) => Number(s.src_rtt_ms.toFixed(1))),
         });
       }
       if (showDstRtt) {
         leftSeries.push({
-          name: "Down RTT (下行)",
+          name: "Down RTT (ms)",
           type: "line",
           showSymbol: false,
-          lineStyle: { width: 1.4, type: "dashed", color: "#94a3b8" },
+          itemStyle: { color: COLOR_PERIWINKLE },
+          lineStyle: { width: 1.4, type: "dashed", color: COLOR_PERIWINKLE },
           data: toSeries(samples, (s) => Number(s.dst_rtt_ms.toFixed(1))),
         });
       }
     } else {
       if (showRtt) {
         leftSeries.push({
-          name: "NAK Lost",
+          name: "NAK Lost (pkt)",
           type: "line",
           showSymbol: false,
-          lineStyle: { width: 1.8, color: "#e3b341" },
+          itemStyle: { color: COLOR_AMBER },
+          lineStyle: { width: 1.8, color: COLOR_AMBER },
           data: toSeries(samples, (s) => s.dst_nak_count),
         });
       }
       if (showLatency) {
         leftSeries.push({
-          name: "DropReq",
+          name: "DropReq (pkt)",
           type: "bar",
           barMaxWidth: 5,
-          itemStyle: { color: "#f85149" },
+          itemStyle: { color: COLOR_CRIMSON },
           data: toSeries(samples, (s) => s.src_dropped),
         });
       }
@@ -210,32 +241,44 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
       yAxis: {
         type: "value",
         min: 0,
+        ...(isPass ? { max: (v: { max: number }) => Math.max(v.max, 10), minInterval: 1 } : {}),
         splitLine: { lineStyle: { color: splitColor } },
         axisLabel: { color: labelColor, fontSize: 10 },
       },
       series: leftSeries,
     });
 
-    // Right Chart: BANDWIDTH USE (Mb/s) + Retransmit & Dropped
+    // Right Chart: BANDWIDTH USE (Mb/s) — Bitrate, Retransmit Rate (Mb/s), optional Link BW + Dropped (pkt)
     const rightSeries: echarts.SeriesOption[] = [];
     if (showRate) {
       rightSeries.push({
         name: "Bitrate (Mb/s)",
         type: "line",
         showSymbol: false,
-        lineStyle: { width: 2, color: "#6e8efb" },
-        areaStyle: { color: "rgba(110, 142, 251, 0.08)" },
+        itemStyle: { color: COLOR_PERIWINKLE },
+        lineStyle: { width: 2, color: COLOR_PERIWINKLE },
+        areaStyle: { color: "rgba(129, 140, 248, 0.10)" },
         data: toSeries(samples, (s) => Number(s.src_mbps.toFixed(2))),
       });
     }
     if (showRetrans) {
       rightSeries.push({
-        name: "Retransmit (pkt)",
+        name: "Retransmit Rate (Mb/s)",
         type: "line",
-        yAxisIndex: 1,
         showSymbol: false,
-        lineStyle: { width: 1.5, color: "#e3b341" },
-        data: toSeries(samples, (s) => (isPass ? s.src_retrans : s.src_retrans + s.dst_retrans)),
+        itemStyle: { color: COLOR_AMBER },
+        lineStyle: { width: 1.6, color: COLOR_AMBER },
+        data: toSeries(samples, (s, dt) => calcRetransMbps(s, isPass, dt)),
+      });
+    }
+    if (!isPass && showLinkBw) {
+      rightSeries.push({
+        name: "Link BW (Mb/s)",
+        type: "line",
+        showSymbol: false,
+        itemStyle: { color: COLOR_SLATE },
+        lineStyle: { width: 1.4, type: "dashed", color: COLOR_SLATE },
+        data: toSeries(samples, (s) => Number((s.src_link_bw_mbps ?? 0).toFixed(1))),
       });
     }
     if (showDropped) {
@@ -244,7 +287,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
         type: "bar",
         yAxisIndex: 1,
         barMaxWidth: 5,
-        itemStyle: { color: "#f85149" },
+        itemStyle: { color: COLOR_CRIMSON },
         data: toSeries(samples, (s) => (isPass ? s.src_dropped : s.src_dropped + s.dst_dropped)),
       });
     }
@@ -264,6 +307,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
         {
           type: "value",
           min: 0,
+          max: (v: { max: number }) => Math.max(v.max, 10),
           minInterval: 1,
           splitLine: { show: false },
           axisLabel: { color: labelColor, fontSize: 10 },
@@ -287,11 +331,13 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
     activeLegHistory,
     theme,
     isPass,
+    rttLineColor,
     showRtt,
     showDstRtt,
     showLatency,
     showRate,
     showRetrans,
+    showLinkBw,
     showDropped,
   ]);
 
@@ -299,10 +345,44 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
 
   const s = activeLeg.sample;
   const st = statusDisplay(activeLeg);
-  const totalDropped = isPass ? s.src_dropped : s.src_dropped + s.dst_dropped;
-  const totalLost = isPass ? s.dst_nak_count : s.src_lost + s.dst_lost;
-  const totalRecovered = isPass ? s.src_retrans : s.src_retrans + s.dst_retrans;
+  const winLabel = WINDOWS.find((w) => w.sec === windowSec)?.label ?? "5m";
+  const histSamples = activeLegHistory?.samples ?? [];
+
+  // Cumulative window totals matching Haivision STATISTICS semantics
+  const winPackets =
+    histSamples.length > 0
+      ? histSamples.reduce((acc, x) => acc + (x.src_packets ?? 0), 0)
+      : s.src_packets ?? 0;
+  const winDropped =
+    histSamples.length > 0
+      ? histSamples.reduce(
+          (acc, x) => acc + (isPass ? x.src_dropped : x.src_dropped + x.dst_dropped),
+          0
+        )
+      : isPass
+      ? s.src_dropped
+      : s.src_dropped + s.dst_dropped;
+  const winLost =
+    histSamples.length > 0
+      ? histSamples.reduce(
+          (acc, x) => acc + (isPass ? x.dst_nak_count : x.src_lost + x.dst_lost),
+          0
+        )
+      : isPass
+      ? s.dst_nak_count
+      : s.src_lost + s.dst_lost;
+  const winRecovered =
+    histSamples.length > 0
+      ? histSamples.reduce(
+          (acc, x) => acc + (isPass ? x.src_retrans : x.src_retrans + x.dst_retrans),
+          0
+        )
+      : isPass
+      ? s.src_retrans
+      : s.src_retrans + s.dst_retrans;
+
   const flowing = activeLeg.node_online && s.src_mbps >= 0.1;
+  const linkBwMbps = s.src_link_bw_mbps ?? 0;
 
   const hasTSBPD = !isPass && s.src_tsbpd_ms > 0;
   const marginPct = hasTSBPD ? Math.round(((s.src_rtt_ms * 4) / s.src_tsbpd_ms) * 100) : 0;
@@ -315,6 +395,13 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
   const udpDrops = activeLegHistory
     ? activeLegHistory.host.reduce((acc, h) => acc + h.udp_rcvbuf_errors, 0)
     : activeLeg.host.udp_rcvbuf_errors;
+
+  const showFaultNote =
+    s.fault_code !== "HEALTHY" && s.fault_code !== "IDLE_EXPECTED_OFF" && Boolean(s.fault_summary);
+  const isCritNote =
+    s.fault_code === "UPSTREAM_OFFLINE" ||
+    s.fault_code === "CLOUD_PROCESS_DOWN" ||
+    s.fault_code === "NODE_UNREACHABLE";
 
   return (
     <div className="hv-drawer" onClick={(e) => e.stopPropagation()}>
@@ -339,7 +426,8 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
           )}
           <span className="hv-path-hint mono">
             {s.src_peer_ip || activeLeg.src_device || "Source"} → {activeLeg.node_id}:{activeLeg.in_port}
-            {!isPass ? `/${activeLeg.out_port}` : ""} → {s.dst_peer_ip || activeLeg.target_addr || activeLeg.dst_device || "Destination"}
+            {!isPass ? `/${activeLeg.out_port}` : ""} →{" "}
+            {s.dst_peer_ip || activeLeg.target_addr || activeLeg.dst_device || "Destination"}
           </span>
         </div>
 
@@ -388,7 +476,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
                   className={`hv-legend-pill ${showRtt ? "on" : ""}`}
                   onClick={() => setShowRtt((v) => !v)}
                 >
-                  <span className="hv-legend-dot" style={{ background: "#60a5fa" }} />
+                  <span className="hv-legend-dot" style={{ background: rttLineColor }} />
                   Round Trip
                 </button>
                 <button
@@ -396,7 +484,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
                   className={`hv-legend-pill ${showDstRtt ? "on" : ""}`}
                   onClick={() => setShowDstRtt((v) => !v)}
                 >
-                  <span className="hv-legend-dot" style={{ background: "#94a3b8" }} />
+                  <span className="hv-legend-dot" style={{ background: COLOR_PERIWINKLE }} />
                   Down RTT
                 </button>
                 <button
@@ -404,7 +492,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
                   className={`hv-legend-pill ${showLatency ? "on" : ""}`}
                   onClick={() => setShowLatency((v) => !v)}
                 >
-                  <span className="hv-legend-dot" style={{ background: "#e3b341" }} />
+                  <span className="hv-legend-dot" style={{ background: COLOR_AMBER }} />
                   Latency
                 </button>
               </>
@@ -415,7 +503,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
                   className={`hv-legend-pill ${showRtt ? "on" : ""}`}
                   onClick={() => setShowRtt((v) => !v)}
                 >
-                  <span className="hv-legend-dot" style={{ background: "#e3b341" }} />
+                  <span className="hv-legend-dot" style={{ background: COLOR_AMBER }} />
                   NAK Lost
                 </button>
                 <button
@@ -423,7 +511,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
                   className={`hv-legend-pill ${showLatency ? "on" : ""}`}
                   onClick={() => setShowLatency((v) => !v)}
                 >
-                  <span className="hv-legend-dot" style={{ background: "#f85149" }} />
+                  <span className="hv-legend-dot" style={{ background: COLOR_CRIMSON }} />
                   DropReq
                 </button>
               </>
@@ -440,7 +528,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
               className={`hv-legend-pill ${showRate ? "on" : ""}`}
               onClick={() => setShowRate((v) => !v)}
             >
-              <span className="hv-legend-dot" style={{ background: "#6e8efb" }} />
+              <span className="hv-legend-dot" style={{ background: COLOR_PERIWINKLE }} />
               Bitrate
             </button>
             <button
@@ -448,15 +536,25 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
               className={`hv-legend-pill ${showRetrans ? "on" : ""}`}
               onClick={() => setShowRetrans((v) => !v)}
             >
-              <span className="hv-legend-dot" style={{ background: "#e3b341" }} />
-              Retransmit
+              <span className="hv-legend-dot" style={{ background: COLOR_AMBER }} />
+              Retransmit Rate
             </button>
+            {!isPass && (
+              <button
+                type="button"
+                className={`hv-legend-pill ${showLinkBw ? "on" : ""}`}
+                onClick={() => setShowLinkBw((v) => !v)}
+              >
+                <span className="hv-legend-dot" style={{ background: COLOR_SLATE }} />
+                Link BW
+              </button>
+            )}
             <button
               type="button"
               className={`hv-legend-pill ${showDropped ? "on" : ""}`}
               onClick={() => setShowDropped((v) => !v)}
             >
-              <span className="hv-legend-dot" style={{ background: "#f85149" }} />
+              <span className="hv-legend-dot" style={{ background: COLOR_CRIMSON }} />
               {isPass ? "DropReq" : "Dropped"}
             </button>
           </div>
@@ -466,7 +564,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
       {/* Centered Minimal Haivision STATISTICS Table */}
       <div className="hv-stats-wrap">
         <div className="hv-stats-card">
-          <div className="hv-chart-title">STATISTICS</div>
+          <div className="hv-chart-title">STATISTICS · {winLabel}</div>
           <div className="hv-stats-rows">
             <div className="hv-stat-row">
               <span>Status</span>
@@ -478,28 +576,45 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
             </div>
             <div className="hv-stat-row">
               <span>Bitrate</span>
-              <strong className="mono">{s.src_mbps.toFixed(2)} Mb/s</strong>
+              <strong className="mono">
+                {s.src_mbps.toFixed(2)} Mb/s
+                {!isPass && s.fault_code === "DOWNSTREAM_OFFLINE" ? " (出站 0.00)" : ""}
+              </strong>
+            </div>
+            {!isPass && linkBwMbps > 0 && (
+              <div className="hv-stat-row">
+                <span>Link Bandwidth</span>
+                <strong className="mono">{linkBwMbps.toFixed(1)} Mb/s</strong>
+              </div>
+            )}
+            <div className="hv-stat-row">
+              <span>Packets ({winLabel})</span>
+              <strong className="mono">{winPackets > 0 ? winPackets.toLocaleString() : "-"}</strong>
             </div>
             <div className="hv-stat-row">
-              <span>{isPass ? "Dropped (DropReq)" : "Dropped Packets"}</span>
+              <span>
+                {isPass ? `Dropped / DropReq (${winLabel})` : `Dropped Packets (${winLabel})`}
+              </span>
               <strong
                 className="mono"
                 style={{
                   color:
-                    totalDropped > 0
+                    winDropped > 0
                       ? "var(--crit)"
                       : flowing
                       ? "var(--ok)"
                       : "var(--text-secondary)",
                 }}
               >
-                {totalDropped}
+                {winDropped.toLocaleString()}
               </strong>
             </div>
             <div className="hv-stat-row">
-              <span>{isPass ? "NAK / Retransmit" : "Lost / Recovered"}</span>
+              <span>
+                {isPass ? `NAK / Retransmit (${winLabel})` : `Lost / Recovered (${winLabel})`}
+              </span>
               <strong className="mono">
-                {totalLost} / {totalRecovered}
+                {winLost.toLocaleString()} / {winRecovered.toLocaleString()}
               </strong>
             </div>
             <div className="hv-stat-row">
@@ -508,7 +623,7 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
                 {isPass
                   ? "End-to-End"
                   : s.src_rtt_ms > 0
-                  ? `${s.src_rtt_ms.toFixed(0)} / ${s.dst_rtt_ms.toFixed(0)} ms`
+                  ? `${s.src_rtt_ms.toFixed(0)} / ${s.dst_rtt_ms > 0 ? s.dst_rtt_ms.toFixed(0) : "-"} ms`
                   : "-"}
               </strong>
             </div>
@@ -539,6 +654,9 @@ export function HaivisionDrawer({ group, theme, onOpenTimeline, onRestartLeg }: 
               </strong>
             </div>
           </div>
+          {showFaultNote && (
+            <div className={`hv-stat-note ${isCritNote ? "is-crit" : ""}`}>{s.fault_summary}</div>
+          )}
         </div>
       </div>
     </div>
